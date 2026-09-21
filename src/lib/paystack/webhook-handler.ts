@@ -50,6 +50,11 @@ async function readBodyLimited(request: Request, max: number): Promise<Buffer | 
 }
 
 export async function handlePaystackWebhook(request: Request, deps: Deps): Promise<Response> {
+  // The arrival time: stamped BEFORE anything else (before the body is read, before the signature is checked, before
+  // any Paystack call), so it reflects when the request reached us, not when we finished. It is stored as
+  // webhook_events.received_at; the row is only written after processing, so this is the only place it survives.
+  const receivedAt = new Date();
+
   try {
     // 1. Size first: cheap, and nothing is computed over an oversized body.
     const raw = await readBodyLimited(request, MAX_WEBHOOK_BYTES);
@@ -86,6 +91,7 @@ export async function handlePaystackWebhook(request: Request, deps: Deps): Promi
           providerStatus: parsed.evidence.status,
           txRef: parsed.reference.slice(0, 200),
           payload: parsed.evidence,
+          receivedAt,
         },
       },
       { db: deps.db, fetch: deps.fetch },

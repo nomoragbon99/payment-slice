@@ -214,6 +214,15 @@ model WebhookEvent {
   // storing card details). The signature was already checked against the raw bytes before this row exists.
   payload Json
 
+  // When the webhook REQUEST reached our handler. The handler stamps it on its very first line (before the
+  // body is read or the signature checked) and passes it in, so received_at <= processed_at always, and the gap
+  // between them is our own processing time (including the Paystack verify call). The row itself is only
+  // written after processing finishes, so the column default below is NOT the arrival time: it is only a
+  // fallback for a row inserted some other way.
+  // HISTORY: the first 3 real rows (payments 7aba513…, 92769fe…, 6c584b1…) were written BEFORE this was fixed,
+  // when the column simply took the row-write time. Their received_at is 1-6 ms AFTER their processed_at (an
+  // impossible order for an arrival time) and should be read as "about processed_at". They are left as they
+  // are: they are real evidence, and no migration was needed. See DECISIONS.md and BUILD_LOG.md.
   receivedAt DateTime @default(now()) @map("received_at") @db.Timestamptz
 
   // Null = claimed but not finished; a timestamp = done.

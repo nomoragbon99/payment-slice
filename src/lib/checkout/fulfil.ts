@@ -32,6 +32,10 @@ export type WebhookEventInput = {
   providerStatus: string;
   txRef: string;
   payload: TransactionEvidence;
+  // When the request reached our handler: stamped on the handler's very first line, before the body is read or
+  // the signature checked. Stored as webhook_events.received_at. The row itself is only written after processing,
+  // so this is the ONLY place the true arrival time survives. Same clock as processed_at, so received <= processed.
+  receivedAt: Date;
 };
 
 export type FulfilInput = {
@@ -182,6 +186,7 @@ function eventRow(event: WebhookEventInput, outcome: WebhookOutcome) {
     providerStatus: event.providerStatus,
     txRef: event.txRef,
     payload: event.payload as Prisma.InputJsonValue,
+    receivedAt: event.receivedAt,
     processedAt: new Date(),
     outcome,
   };

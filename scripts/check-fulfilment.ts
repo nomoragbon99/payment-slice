@@ -74,6 +74,7 @@ function webhookEventFor(o: Order, over: Partial<WebhookEventInput> = {}): Webho
   return {
     eventType: "charge.success", providerTransactionId: String(o.providerId), providerStatus: "success", txRef: o.txRef,
     payload: transactionEvidenceSchema.parse({ ...verifyFixture.data, id: o.providerId, reference: o.txRef, amount: o.amount, currency: "NGN", status: "success" }),
+    receivedAt: new Date(),
     ...over,
   };
 }
@@ -234,6 +235,42 @@ async function main() {
     check("the page FIRST, then the webhook: fulfilled, then already_fulfilled", page.outcome === "fulfilled" && hook.outcome === "already_fulfilled");
     const ev = await eventsFor(o.txRef);
     check("...the webhook is still recorded (outcome already_fulfilled) and the ledger is not doubled", ev.length === 1 && ev[0].outcome === "already_fulfilled" && (await typesOf(o.txRef)) === "fulfilled,initiated,verified" && p.state.calls === 1);
+  }
+
+  console.log("\n== webhook_events.received_at is the ARRIVAL time the handler stamped, not the time the row was written ==");
+  {
+    // The arrival time is handed in by the caller (the handler stamps it on its first line). Give it a moment well
+    // in the past so it cannot be confused with the time the row is written.
+    const u = await makeUser("ra"); const o = await makeOrder(u); const p = fakePaystack(paystackReply(o));
+    const arrived = new Date(Date.now() - 2500);
+    const r = await fulfil(o, { source: "webhook", fetchFn: p.fetchFn, event: webhookEventFor(o, { receivedAt: arrived }) });
+    const [row] = await eventsFor(o.txRef);
+    check("fulfilled webhook: received_at is EXACTLY the arrival time that was passed in (not the write time)", r.outcome === "fulfilled" && row.receivedAt.getTime() === arrived.getTime(), `${row.receivedAt.toISOString()} vs ${arrived.toISOString()}`);
+    check("...and arrival is never later than processing; the gap is at least the 2.5 s we pretended it took", row.receivedAt.getTime() <= row.processedAt!.getTime() && row.processedAt!.getTime() - row.receivedAt.getTime() >= 2500, `${row.processedAt!.getTime() - row.receivedAt.getTime()} ms`);
+
+    // A redelivery must not rewrite the first arrival time.
+    const later = new Date();
+    const dup = await fulfil(o, { source: "webhook", fetchFn: p.fetchFn, event: webhookEventFor(o, { receivedAt: later }) });
+    const [again] = await eventsFor(o.txRef);
+    check("a redelivery (duplicate_event) leaves the FIRST arrival time untouched", dup.outcome === "duplicate_event" && again.receivedAt.getTime() === arrived.getTime());
+
+    // Every outcome records the arrival time it was given, not the write time.
+    const cases: [string, Record<string, unknown>, string][] = [
+      ["already_fulfilled (the page got there first)", {}, "already_fulfilled"],
+      ["amount_mismatch", { amount: 299999 }, "amount_mismatch"],
+      ["verification_failed (Paystack says abandoned)", { status: "abandoned" }, "verification_failed"],
+    ];
+    for (const [name, over, outcome] of cases) {
+      const u2 = await makeUser("rb"); const o2 = await makeOrder(u2); const at = new Date(Date.now() - 1800);
+      if (outcome === "already_fulfilled") await fulfil(o2, { fetchFn: fakePaystack(paystackReply(o2)).fetchFn });
+      await fulfil(o2, { source: "webhook", fetchFn: fakePaystack(paystackReply(o2, over)).fetchFn, event: webhookEventFor(o2, { receivedAt: at }) });
+      const [ev2] = await eventsFor(o2.txRef);
+      check(`${name}: received_at is the arrival time passed in, and never after processed_at`, ev2?.outcome === outcome && ev2.receivedAt.getTime() === at.getTime() && ev2.receivedAt.getTime() <= ev2.processedAt!.getTime());
+    }
+    const ghost = webhookEventFor(o, { txRef: "pslice-not-ours", providerTransactionId: "8800000001", receivedAt: new Date(Date.now() - 900), payload: transactionEvidenceSchema.parse({ ...verifyFixture.data, id: 8800000001, reference: `pslice-${randomUUID()}` }) });
+    await fulfil(o, { source: "webhook", fetchFn: p.fetchFn, reference: `pslice-${randomUUID()}`, event: ghost });
+    const [g] = await db.webhookEvent.findMany({ where: { providerTransactionId: "8800000001" } });
+    check("unknown_tx_ref: received_at is the arrival time passed in", g?.outcome === "unknown_tx_ref" && g.receivedAt.getTime() === ghost.receivedAt.getTime());
   }
 
   console.log("\n== both callers at the same moment: exactly one fulfilment ==");

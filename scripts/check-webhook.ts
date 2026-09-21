@@ -227,6 +227,58 @@ async function main() {
     check("10 trials x 20 IDENTICAL deliveries at the same instant: all 200, exactly one event row and one fulfilment each time", bad === 0, worst);
   }
 
+  console.log("\n== received_at is the true ARRIVAL time, stamped before anything else ==");
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  {
+    // A slow Paystack: the verify call takes 400 ms. Arrival and completion must now be visibly apart.
+    const o = await makeOrder();
+    const p = fakePaystack(async () => { await sleep(400); return verifyReply(o)(); });
+    const sentAt = Date.now();
+    const r = await post(chargeBody(o), { fetchFn: p.fetchFn });
+    const [ev] = await events(o.txRef);
+    const gap = ev.processedAt!.getTime() - ev.receivedAt.getTime();
+    check("slow verify (Paystack takes 400 ms): 200, and arrival is never later than processing", r.status === 200 && ev.receivedAt.getTime() <= ev.processedAt!.getTime());
+    check("...the gap between arrival and completion is visible: about the 400 ms the verify call took (380 ms to 3 s)", gap >= 380 && gap < 3000, `${gap} ms`);
+    check("...and received_at is when the request ARRIVED (within 150 ms of sending it), not when the row was written", ev.receivedAt.getTime() >= sentAt - 5 && ev.receivedAt.getTime() - sentAt < 150, `${ev.receivedAt.getTime() - sentAt} ms after sending`);
+  }
+  {
+    // The arrival time is taken BEFORE the body is read: here the body itself takes 350 ms to arrive.
+    const o = await makeOrder(); const bytes = chargeBody(o);
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(new Uint8Array(bytes.subarray(0, 100)));
+        await sleep(350);
+        controller.enqueue(new Uint8Array(bytes.subarray(100)));
+        controller.close();
+      },
+    });
+    const request = new Request("http://localhost:3002/api/webhooks/paystack", { method: "POST", headers: { "content-type": "application/json", "x-paystack-signature": sign(bytes) }, body: stream, duplex: "half" } as RequestInit);
+    const sentAt = Date.now();
+    const res = await handlePaystackWebhook(request, { secretKey: SECRET, db, fetch: fakePaystack(verifyReply(o)).fetchFn });
+    const [ev] = await events(o.txRef);
+    check("a body that takes 350 ms to arrive is still accepted (200)", res.status === 200 && (await ledger(o.txRef)) === "fulfilled,initiated,verified");
+    check("received_at is the moment the request STARTED (stamped before the body was read), not after the 350 ms wait", ev.receivedAt.getTime() - sentAt < 100, `${ev.receivedAt.getTime() - sentAt} ms after sending`);
+    check("...so processed_at is at least 340 ms later (the body wait is now part of the visible gap)", ev.processedAt!.getTime() - ev.receivedAt.getTime() >= 340, `${ev.processedAt!.getTime() - ev.receivedAt.getTime()} ms`);
+  }
+  {
+    // A redelivery must not rewrite the FIRST arrival time.
+    const o = await makeOrder(); const p = fakePaystack(verifyReply(o)); const body = chargeBody(o);
+    await post(body, { fetchFn: p.fetchFn });
+    const [first] = await events(o.txRef);
+    await sleep(150);
+    const second = await post(body, { fetchFn: p.fetchFn });
+    const [after] = await events(o.txRef);
+    check("a redelivery 150 ms later: 200, and the row still holds the FIRST arrival time", second.status === 200 && after.receivedAt.getTime() === first.receivedAt.getTime() && (await events(o.txRef)).length === 1);
+  }
+  {
+    // An outcome with no Paystack call at all still stamps the arrival time.
+    const ghost = { txRef: `pslice-${randomUUID()}`, providerId: 6_910_000_001, amount: 300000 };
+    const sentAt = Date.now();
+    await post(chargeBody(ghost), { fetchFn: fakePaystack(verifyReply(await makeOrder())).fetchFn });
+    const [g] = await events(ghost.txRef);
+    check("a reference we never issued (unknown_tx_ref, no Paystack call): received_at is still the arrival time", g?.outcome === "unknown_tx_ref" && g.receivedAt.getTime() >= sentAt - 5 && g.receivedAt.getTime() <= g.processedAt!.getTime());
+  }
+
   console.log("\n== references we never issued ==");
   {
     const p = fakePaystack(verifyReply(await makeOrder()));
@@ -304,6 +356,13 @@ async function main() {
     if (files.length === 0) console.log("(no real captures found: skipped)");
   } else {
     console.log("(skipped: the real captures in tmp/real-webhooks/ are not present, or PAYSTACK_SECRET_KEY is not loaded)");
+  }
+
+  console.log("\n== the invariant over every event recorded in this whole run ==");
+  {
+    const rowsTotal = await db.webhookEvent.count();
+    const backwards = (await db.$queryRaw<{ n: number }[]>`SELECT count(*)::int AS n FROM webhook_events WHERE received_at > processed_at`)[0].n;
+    check("no webhook_events row anywhere has received_at LATER than processed_at (the impossible order the old column had)", rowsTotal > 20 && backwards === 0, `${rowsTotal} rows checked, ${backwards} backwards`);
   }
 
   console.log("\n== logging ==");

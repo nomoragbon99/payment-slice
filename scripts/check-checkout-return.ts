@@ -183,7 +183,7 @@ async function main() {
   console.log("\n== already fulfilled (say, by the webhook first): our ledger is enough ==");
   {
     const u = await makeUser("wh"); const o = await makeOrder(u);
-    const hook = await fulfilTransaction({ reference: o.txRef, source: "webhook", secretKey: SECRET, webhookEvent: { eventType: "charge.success", providerTransactionId: String(o.providerId), providerStatus: "success", txRef: o.txRef, payload: { id: o.providerId, status: "success", reference: o.txRef, amount: 300000, currency: "NGN" } } }, { db, fetch: fakePaystack(reply(o)).fetchFn });
+    const hook = await fulfilTransaction({ reference: o.txRef, source: "webhook", secretKey: SECRET, webhookEvent: { eventType: "charge.success", providerTransactionId: String(o.providerId), providerStatus: "success", txRef: o.txRef, payload: { id: o.providerId, status: "success", reference: o.txRef, amount: 300000, currency: "NGN" }, receivedAt: new Date() } }, { db, fetch: fakePaystack(reply(o)).fetchFn });
     const p = fakePaystack(reply(o, { status: "failed" })); const c = recordingConsume(); const before = await counts(u);
     const state = await visit(u, o.txRef, { fetch: p.fetchFn, consume: c.fn });
     check("the webhook fulfilled it first; the page then shows successful", hook.outcome === "fulfilled" && state.kind === "successful" && orderIsOurs(state));
@@ -192,7 +192,7 @@ async function main() {
   {
     const u = await makeUser("pg"); const o = await makeOrder(u); const p = fakePaystack(reply(o));
     const state = await visit(u, o.txRef, { fetch: p.fetchFn, consume: allow });
-    const hook = await fulfilTransaction({ reference: o.txRef, source: "webhook", secretKey: SECRET, webhookEvent: { eventType: "charge.success", providerTransactionId: String(o.providerId), providerStatus: "success", txRef: o.txRef, payload: { id: o.providerId, status: "success", reference: o.txRef, amount: 300000, currency: "NGN" } } }, { db, fetch: p.fetchFn });
+    const hook = await fulfilTransaction({ reference: o.txRef, source: "webhook", secretKey: SECRET, webhookEvent: { eventType: "charge.success", providerTransactionId: String(o.providerId), providerStatus: "success", txRef: o.txRef, payload: { id: o.providerId, status: "success", reference: o.txRef, amount: 300000, currency: "NGN" }, receivedAt: new Date() } }, { db, fetch: p.fetchFn });
     check("the page fulfilled it FIRST; the webhook that follows finds it done", state.kind === "successful" && hook.outcome === "already_fulfilled" && (await ledger(o.txRef)) === "fulfilled,initiated,verified");
   }
   {
