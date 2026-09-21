@@ -14,8 +14,8 @@ export const dynamic = "force-dynamic";
 
 type SearchParams = Promise<{ reference?: string | string[]; trxref?: string | string[] }>;
 
-// Where the person is sent to try again. The subscription screen does not exist yet, so for now: the dashboard.
-const TRY_AGAIN_HREF = "/dashboard";
+// Where the person is sent to try again: the plans page, where a checkout is started.
+const TRY_AGAIN_HREF = "/plans";
 
 // This page decides NOTHING itself. Arriving here from a redirect proves nothing: the reference in the URL only
 // names a payment. getReturnStatus() hands it to fulfilTransaction(), the same function the webhook uses, which

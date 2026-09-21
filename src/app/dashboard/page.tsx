@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/session";
 import { SignOutButton } from "./SignOutButton";
@@ -16,6 +17,14 @@ export default async function DashboardPage() {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-gray-50 px-4">
       <p className="text-lg text-gray-900">You are signed in as {user.name}.</p>
+      <p className="flex gap-4 text-sm">
+        <Link href="/plans" className="text-blue-600 underline">
+          Plans
+        </Link>
+        <Link href="/billing" className="text-blue-600 underline">
+          Billing
+        </Link>
+      </p>
       <SignOutButton />
     </div>
   );
