@@ -36,3 +36,10 @@ Append-only. Every error, surprise or wrong assumption during the build. Raw mat
 - Cause: my assumption that an integer column rejects decimals was wrong at the database level.
 - Fix: no schema change is possible (a CHECK cannot see the original value once it is cast). Recorded in DECISIONS.md: the app must validate integer amounts with Zod before insert and convert Flutterwave's major-unit amounts to kobo in exactly one place.
 - Commit: ba3e51e
+
+### Correction: wrong commit hash in three entries above (2026-09-21 03:52)
+- Symptom: the entries "Prisma client was stale...", "Append-only trigger error surfaced as ..." and "Postgres rounds a fractional amount..." cite `Commit: ba3e51e`, which does not exist in the pushed history.
+- Investigation: `git log` shows the schema commit is 70682a6. I had written the hash into the log, then run `git commit --amend --no-edit` to include that edit, and amending gives the commit a new hash. Checked that origin/main is at 70682a6, so the correct hash is the pushed one.
+- Cause: my own sequencing. Recording a commit's hash and then amending that same commit invalidates the hash.
+- Fix: this correcting entry (the log is append-only, so the old lines stay). Rule for myself: never amend after recording a hash; commit the log entry in a follow-up commit.
+- Commit: see this entry's own follow-up commit in git log
