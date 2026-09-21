@@ -1,0 +1,11 @@
+// The connection URL lives in prisma.config.ts (Prisma 7 no longer reads it here).
+// No models yet: this is the scaffold only.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}

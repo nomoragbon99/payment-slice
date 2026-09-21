@@ -1,0 +1,26 @@
+# Project name keeps these containers and volumes separate from other local projects.
+name: payment-slice
+
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      # Local development credentials only. Never reuse outside this machine.
+      POSTGRES_USER: payment
+      POSTGRES_PASSWORD: payment
+      POSTGRES_DB: payment
+    ports:
+      # 5434 on the host: 5432 is notebound-postgres and 5433 is auth-slice's Postgres.
+      - "5434:5432"
+    volumes:
+      # Postgres 18 images keep data under /var/lib/postgresql/18/docker, so mount the parent.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payment -d payment"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+    name: payment-slice-pgdata
