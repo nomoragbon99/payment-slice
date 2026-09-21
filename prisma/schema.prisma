@@ -219,3 +219,24 @@ model WebhookEvent {
   @@unique([provider, eventType, providerTransactionId, providerStatus])
   @@map("webhook_events")
 }
+
+// ───────── rate_limit_buckets: fixed-window counters for rate limiting ─────────
+// Used by the checkout-initiation endpoint (sign-in deliberately has no rate limiting). One row
+// per (key, window): the first hit in a window inserts it with count 1, later hits increment it
+// in a single atomic statement (INSERT ... ON CONFLICT DO UPDATE), so two simultaneous requests
+// cannot both read the same count and both slip under the limit.
+model RateLimitBucket {
+  // What is being limited, e.g. "checkout:user:<user id>".
+  key String
+
+  // Start of this fixed counting window. Part of the key: a new window is a new row.
+  windowStart DateTime @map("window_start") @db.Timestamptz
+
+  // Attempts seen in this window. CHECK count > 0: a row exists only because an attempt happened.
+  count Int
+
+  // Composite PK: "increment this window's counter" is one upsert keyed on the exact pair,
+  // so two counters for the same key and window can never exist.
+  @@id([key, windowStart])
+  @@map("rate_limit_buckets")
+}
