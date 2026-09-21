@@ -11,6 +11,7 @@
     "db:down": "docker compose down",
     "db:migrate": "prisma migrate dev && prisma generate",
     "db:seed": "tsx --env-file=.env scripts/seed.ts",
+    "dev:webhook-gate": "tsx scripts/webhook-gate.ts",
     "check:checkout": "tsx --env-file=.env scripts/check-checkout.ts",
     "check:rate-limit": "tsx --env-file=.env scripts/check-rate-limit.ts",
     "check:checkout-return": "tsx --env-file=.env scripts/check-checkout-return.ts",
