@@ -1,5 +1,11 @@
 // The connection URL lives in prisma.config.ts (Prisma 7 no longer reads it here).
-// No models yet: this is the scaffold only.
+// snake_case table/column names via @@map/@map so the SQL layer reads naturally in psql.
+//
+// Enum-like columns are text + a CHECK constraint, not Prisma enums: a CHECK changes with one
+// ALTER TABLE, while a Postgres enum type is awkward to change. Prisma cannot express CHECK
+// constraints, partial unique indexes or triggers, so those live in the hand-edited migration
+// SQL (prisma/migrations/*_init_payment_core/migration.sql). Each one is referenced below as
+// "CHECK ..." next to the column it protects.
 
 generator client {
   provider = "prisma-client"
@@ -8,4 +14,197 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+// ───────── users + sessions: REUSED from auth-slice (permitted by the assessment brief) ─────────
+// This project has its own database, so it has its own copy of the table shape and the same
+// session mechanism: a random token in an httpOnly cookie, only its SHA-256 stored as
+// sessions.id, fixed 7-day lifetime. Left out on purpose: users.email_verified_at and the tables
+// email_verification_codes, password_reset_tokens, rate_limit_buckets, idempotency_keys. None of
+// them are needed to identify a signed-in user for this slice.
+model User {
+  // gen_random_uuid() is a Postgres 18 built-in; a DB-level default keeps the row valid even
+  // if something other than Prisma inserts it.
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  // One account per email. CHECK email = lower(btrim(email)) makes "A@x.com" vs "a@x.com" duplicates impossible.
+  email String @unique
+
+  // Shown in the dashboard shell. CHECK char_length(name) BETWEEN 1 AND 80.
+  name String
+
+  // Argon2id encoded hash; needed because sign-in is copied from auth-slice (no sign-up here).
+  passwordHash String @map("password_hash")
+
+  // timestamptz stores an unambiguous instant, not a local wall-clock time.
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  sessions     Session[]
+  subscription Subscription?
+  paymentLogs  PaymentLog[]
+
+  @@map("users")
+}
+
+model Session {
+  // SHA-256 hex of the cookie token, never the token itself: a leaked DB row cannot be replayed.
+  id String @id
+
+  userId String @map("user_id") @db.Uuid
+  // Cascade: deleting a user ends their sessions (sessions hold no financial history).
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // NOT NULL: a session that never expires is impossible.
+  expiresAt DateTime @map("expires_at") @db.Timestamptz
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // "All sessions of this user" is a lookup by user_id.
+  @@index([userId])
+  @@map("sessions")
+}
+
+// ───────── subscriptions: one row = one user's CURRENT paid subscription ─────────
+// "No row" means the user is on the free plan. A row therefore always describes a paid (pro)
+// period, which is why every column below can be NOT NULL: nothing has to be nullable to make
+// room for free users. Entitlement check: status = 'active' AND current_period_end > now().
+//
+// No money columns here on purpose. The price comes from plan config in code and what was
+// actually paid lives only in payment_log; two copies of an amount could disagree.
+model Subscription {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  // UNIQUE = at most one current subscription per user, enforced by the database.
+  userId String @unique @map("user_id") @db.Uuid
+  // Restrict: a paying customer's record is never silently deleted along with their user.
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  // CHECK plan_id = 'pro'. Free users have no row, so 'pro' is the only value that can exist.
+  // The column is kept so a future second paid plan is one CHECK edit, not a schema change.
+  planId String @map("plan_id")
+
+  // CHECK IN ('monthly','yearly'). NOT NULL, and meaningful only for 'pro' -- which is the only
+  // plan a row can have. Named billing_interval because `interval` is a Postgres type name.
+  billingInterval String @map("billing_interval")
+
+  // CHECK IN ('active','past_due','canceled').
+  status String
+
+  // NOT NULL: a row exists only once a payment was fulfilled, so a period always exists.
+  // CHECK current_period_end > current_period_start.
+  currentPeriodStart DateTime @map("current_period_start") @db.Timestamptz
+  currentPeriodEnd   DateTime @map("current_period_end") @db.Timestamptz
+
+  // NOT NULL default false: never a third "unknown" state.
+  cancelAtPeriodEnd Boolean @default(false) @map("cancel_at_period_end")
+
+  // Nullable: most subscriptions are never cancelled.
+  // CHECK reason IS NULL OR cancel_at_period_end OR status = 'canceled'  (no reason without a cancellation)
+  // CHECK reason IS NULL OR char_length(reason) <= 500.
+  cancellationReason String? @map("cancellation_reason")
+
+  // Which verified payment granted this period, for audit. Plain text, not a foreign key,
+  // because tx_ref is deliberately not unique in payment_log (it repeats once per event).
+  lastTxRef String @map("last_tx_ref")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  // This table IS mutable (it holds current state), so unlike payment_log it has updated_at.
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("subscriptions")
+}
+
+// ───────── payment_log: INSERT-ONLY, one row per lifecycle event of a transaction ─────────
+// Append-only is enforced by a trigger in the migration that rejects UPDATE, DELETE and
+// TRUNCATE. Prisma Client still generates update/delete for this model; the trigger, plus a
+// single append function in the app code, is what makes them useless here.
+model PaymentLog {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  userId String @map("user_id") @db.Uuid
+  // Restrict: payment history must outlive any cleanup of users.
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  // What was being bought, so every row describes itself and fulfilment can read the plan back
+  // from the initiation row. CHECK plan_id = 'pro' (nobody pays for the free plan).
+  planId          String @map("plan_id")
+  billingInterval String @map("billing_interval") // CHECK IN ('monthly','yearly')
+
+  // OUR reference, generated at initiation. NOT unique: it legitimately repeats once per event
+  // (initiated, verified, fulfilled), so it only has a plain index.
+  txRef String @map("tx_ref")
+
+  // Flutterwave's transaction id. Nullable because it does not exist at initiation. Text, not
+  // an integer: we do not assume its type or size.
+  // CHECK event_type NOT IN ('verified','fulfilled') OR flw_transaction_id IS NOT NULL.
+  flwTransactionId String? @map("flw_transaction_id")
+
+  // CHECK IN ('initiated','verified','fulfilled','failed').
+  eventType String @map("event_type")
+
+  // Our normalised result. CHECK IN ('pending','successful','failed'), and
+  //   initiated => pending, fulfilled => successful, failed => failed.
+  status String
+
+  // Integer minor units (kobo), never a decimal. Int caps at about NGN 21.4 million, far above
+  // any subscription price. CHECK amount > 0. The amount this event is about: what WE asked for
+  // at initiation, what Flutterwave REPORTED at verification.
+  amount Int
+
+  // NOT NULL: an amount without its currency is invalid. CHECK currency ~ '^[A-Z]{3}$'.
+  currency String
+
+  // jsonb snapshot of Flutterwave's response, as dispute evidence. Nullable: some events have
+  // no response (e.g. a network failure before Flutterwave answered).
+  rawResponse Json? @map("raw_response")
+
+  // The event time. There is deliberately NO updated_at: rows never change.
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Fulfilment looks up all rows of one transaction by tx_ref.
+  @@index([txRef])
+  // A user's history, newest first.
+  @@index([userId, createdAt])
+  @@map("payment_log")
+}
+
+// ───────── webhook_events: idempotency ledger for Flutterwave webhooks ─────────
+// The handler CLAIMS an event by inserting a row (never "check, then insert", which two
+// concurrent requests can both pass). The unique index below makes the second insert wait for
+// the first and then conflict. The claim and the fulfilment writes run in one transaction, so a
+// crash rolls both back and Flutterwave's retry starts clean.
+model WebhookEvent {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  // Flutterwave's top-level `event` field, e.g. 'charge.completed'.
+  eventType String @map("event_type")
+
+  // data.id from the payload. Text for the same reason as payment_log.flw_transaction_id.
+  flwTransactionId String @map("flw_transaction_id")
+
+  // data.status from the payload. Part of the key so a genuine status change for the same
+  // transaction (e.g. pending then successful) is a new event, while a true replay is not.
+  // PROVISIONAL: to be confirmed against a real test-mode payload (see BUILD_LOG.md / DECISIONS.md).
+  providerStatus String @map("provider_status")
+
+  // data.tx_ref, for joining to payment_log when debugging.
+  txRef String @map("tx_ref")
+
+  // jsonb copy of the received body: evidence of exactly what was sent.
+  payload Json
+
+  receivedAt DateTime @default(now()) @map("received_at") @db.Timestamptz
+
+  // Null = claimed but not finished; a timestamp = done.
+  // CHECK (processed_at IS NULL) = (outcome IS NULL): finished and outcome always go together.
+  processedAt DateTime? @map("processed_at") @db.Timestamptz
+
+  // What we did. CHECK IN ('fulfilled','already_fulfilled','verification_failed',
+  // 'amount_mismatch','unknown_tx_ref').
+  outcome String?
+
+  // THE idempotency guarantee: one row per provider event, enforced by the database.
+  @@unique([eventType, flwTransactionId, providerStatus])
+  @@map("webhook_events")
 }

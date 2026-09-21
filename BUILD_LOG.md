@@ -15,3 +15,24 @@ Append-only. Every error, surprise or wrong assumption during the build. Raw mat
 - Cause: transitive dependencies of the Prisma CLI, not code in this repo.
 - Fix: none applied. Did not run `--force`, to keep versions identical to auth-slice; to be revisited if the Prisma pin is bumped.
 - Commit: b4cdcba
+
+### Prisma client was stale after `prisma migrate dev` (2026-09-21 03:41)
+- Symptom: while testing the ORM against payment_log, `db.paymentLog` was undefined: "TypeError: Cannot read properties of undefined (reading 'deleteMany')" (and 'count').
+- Investigation: `prisma migrate dev` reported "Your database is now in sync with your schema", so the database was fine. Checked `prisma migrate status` (up to date) and `prisma migrate diff` (no difference). Neither of those looks at the generated client. The client in src/generated/prisma had been generated at scaffold time from an empty schema (no models), and Prisma 7's `migrate dev` no longer runs `generate` automatically. Also irrelevant but checked: earlier failure of `node --experimental-strip-types` on the generated client was a separate problem (extensionless imports in generated code), fixed by running the throwaway script through `npx tsx`.
+- Cause: my wrong assumption that migrate dev regenerates the client. auth-slice's `db:migrate` script is `prisma migrate dev && prisma generate` for exactly this reason, and this repo copied that script but I ran the bare command by hand.
+- Fix: ran `npx prisma generate`. Use `npm run db:migrate` (which chains generate) instead of the bare command.
+- Commit: ba3e51e
+
+### Append-only trigger error surfaced as "Foreign key constraint violated" (2026-09-21 03:44)
+- Symptom: Prisma Client `paymentLog.update(...)` was rejected with "Foreign key constraint violated", which is not what happened.
+- Investigation: the rejection was correct (my trigger fired) but the message was wrong. A plain-SQL TRUNCATE showed the real text "payment_log is append-only: TRUNCATE is not allowed". An UPDATE of the amount column cannot violate a foreign key, so the trigger had to be the source. The trigger raised SQLSTATE 23001 (restrict_violation).
+- Cause: Prisma maps SQLSTATE 23001 to its foreign-key error (P2003). I chose that code because it sounded right ("restricted operation") without checking how Prisma reports it.
+- Fix: new migration 20260921034500_payment_log_trigger_error_code re-creates the function with the default raise_exception code (P0001); Prisma now shows "payment_log is append-only: UPDATE is not allowed (add a new row instead)". A new migration was used because the first was already applied.
+- Commit: ba3e51e
+
+### Postgres rounds a fractional amount into the integer column (2026-09-21 03:37)
+- Symptom: not an error. Inserting the amount 12.5 into payment_log.amount (integer) succeeded and stored 13.
+- Investigation: expected a rejection; tested it on purpose in the constraint check. Postgres casts a numeric literal to integer by rounding, so no error is raised. Did not check the pg driver/Prisma path: Prisma's Int type is validated client-side and would reject 12.5 before it reaches the database, but raw SQL and any other client would not.
+- Cause: my assumption that an integer column rejects decimals was wrong at the database level.
+- Fix: no schema change is possible (a CHECK cannot see the original value once it is cast). Recorded in DECISIONS.md: the app must validate integer amounts with Zod before insert and convert Flutterwave's major-unit amounts to kobo in exactly one place.
+- Commit: ba3e51e
