@@ -142,3 +142,36 @@ Append-only. Every error, surprise or wrong assumption during the build. Raw mat
 - Cause: Next's dev server sets its own Cache-Control on dynamic pages; production honours the configured header.
 - Fix: keep the single setting in next.config.ts; document that dev mode cannot show it. The dev server was briefly down and is back on 3002.
 - Commit: a59d908
+
+### An ngrok agent forwarding the whole app was running, and the owner then saw none (2026-09-21 17:00)
+- Symptom: while planning the tunnel I found `ngrok.exe http 3002` running (PID 7136, started 05:18, one tunnel to localhost:3002). The owner's reply said `Get-Process ngrok` showed nothing running.
+- Investigation: read-only checks only (process list, the agent's local API at 127.0.0.1:4040, its command line with any token redacted); I did not stop or change it. A re-check after the owner's message showed no ngrok process, nothing on 4040, and only my dev server on 3002, so the agent had been stopped in between (by the owner, consistent with their message). Later the owner started `ngrok http 3991` themselves (the gate), which my check of its command line and its request history confirmed.
+- Cause: not an error in the code. An agent forwarding port 3002 publishes the whole dev app, including sign-in with seeded accounts whose password is in the repo.
+- Fix: the gate (npm run dev:webhook-gate on 3991) so a tunnel can expose only the webhook route.
+- Commit: 1c06acf
+
+### Test-harness near miss: raw SQL went to the real tables (2026-09-21 20:45)
+- Symptom: the first run of scripts/check-fulfilment.ts printed `FAIL connected to the temporary schema, not public`, then `FAIL outcome: fulfilled` and crashed with `TypeError: Cannot read properties of undefined (reading 'status')`.
+- Investigation: before anything else I checked the real tables: payment_log had 11 rows (matching the ledger listing taken before the run), subscriptions and webhook_events 0, no users named fulfil-*, and the temporary schema was already dropped, so nothing had leaked. The cause of the failed guard: `PrismaPg(..., { schema })` makes Prisma's model queries use the temporary schema, but current_schema() and every RAW SQL statement (the subscription upsert) still used the default search_path, i.e. the REAL public tables. `outcome: fulfilled` failed because the raw upsert hit public.subscriptions, and a foreign-key error (the throwaway user existed only in the temporary schema) rolled it back.
+- Cause: my own assumption that the adapter's `schema` option covers raw SQL. Nothing leaked only because of that foreign-key error, which is luck: a test using an existing real user would have written a subscription row into the real table. I had also written the guard as a check that printed FAIL and carried on instead of stopping.
+- Fix: the client now sets BOTH `schema` and a `search_path` connection option, and the guard is fatal: before any test runs it verifies that current_schema, the resolved subscriptions and payment_log tables and the model queries all resolve to the temporary schema. The harness is a shared module. Reruns: real tables identical before and after (11/0/0), no leftover schemas. Recorded in DECISIONS.md ("Tests use a temporary copy of the database structure").
+- Commit: 2d9bc1b (the fix), 3b34211 (shared module)
+
+### Mistakes in my own tests, each found by running them (2026-09-21 21:05)
+- Symptom and cause, in order: (1) `check:checkout-return` failed `no rate-limit rows left for checkout-return keys` because it counted every row with that key prefix, including 7 real rows from the owner's browser test (which also showed the page's automatic re-check really ran: 1 view plus 6 refreshes, about 5 s apart); it now checks only its own throwaway users' keys. (2) The fixture sanitiser's leak check flagged `2030`: my chosen fake expiry year equalled the real test card's, a coincidence but against the rule, so the fake was changed to 2099 and regenerated. (3) In check-webhook two checks (`with no Paystack call and nothing written`) failed because I took the row counts BEFORE creating the throwaway order, which itself adds rows; reordered. (4) A variable named `iso` clashed with an existing date helper of the same name (typecheck errors); renamed. (5) My first 'no expiry' test used a brand-new order and proved nothing; it now inserts an initiated row genuinely dated 30 days ago. (6) A test helper declared with a default parameter swallowed an explicit undefined (found earlier in this task's return-page work).
+- Investigation and fix: in every case I checked the code under test first (payment code, the fixtures, the real tables) and found the fault in the test; nothing in the payment code changed because of them. Commits: f5b2b1a, 2d9bc1b, 3b34211, 8526d75.
+- Commit: 8526d75
+
+### Scripted edits and long shell heredocs failed on quoting and escapes, again (2026-09-21 21:10)
+- Symptom: three times I tried to change files with a node script or a long heredoc; each failed before writing (`Error: cleanup markers`, then `unexpected EOF while looking for matching '` for the docs) or was refused because the file had changed since I read it.
+- Investigation: in each case nothing had been written (checked with git status and by re-reading the files). The recurring cause is escape sequences inside search strings (a backslash-n that does not match the file) and apostrophes in long here-documents.
+- Cause: my own habit, already recorded twice above.
+- Fix: text is now written with the file tool and small exact-text edits, with a short command only to splice files together. No code was affected.
+- Commit: n/a
+
+### A lookup of Paystack timed out connecting, once (2026-09-21 20:30)
+- Symptom: `fetch failed ... ConnectTimeoutError (attempted address: api.paystack.co:443, timeout: 10000ms)` while I asked Paystack about the day's checkouts.
+- Investigation: read-only lookups; retried up to 3 times and the second attempt succeeded with the answers recorded in DECISIONS.md.
+- Cause: a transient network problem on this machine, not the API and not our code (our own client treats it as a retryable failure and never as a payment result).
+- Fix: none needed.
+- Commit: n/a
