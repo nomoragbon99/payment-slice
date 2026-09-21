@@ -10,11 +10,13 @@
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
     "db:migrate": "prisma migrate dev && prisma generate",
+    "db:seed": "tsx --env-file=.env scripts/seed.ts",
     "// db:studio": "Fixed port 5557: 5555 is auth-slice and 5556 is used by another local project, so a shared port would cross-serve data",
     "db:studio": "prisma studio --port 5557",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@node-rs/argon2": "^2.2.1",
     "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
     "next": "16.3.5",
@@ -32,6 +34,7 @@
     "eslint-config-next": "16.3.5",
     "prisma": "7.10.0",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }
