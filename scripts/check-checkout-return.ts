@@ -7,7 +7,7 @@
 import { randomUUID } from "crypto";
 import { inspect } from "util";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient, type Prisma } from "../src/generated/prisma/client";
+import { Prisma, PrismaClient } from "../src/generated/prisma/client";
 import { formatMoney } from "../src/lib/format-money";
 import { appendPaymentLog, type PaymentLogEntry } from "../src/lib/payment-log";
 import { getReturnStatus, pickReference, type ReturnState } from "../src/lib/checkout/return-status";
@@ -38,12 +38,17 @@ function check(name: string, ok: boolean, detail = "") {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? "  -> " + detail : ""}`);
 }
 
+// Ids of every throwaway user this run creates: used to check that OUR rate-limit rows are gone, without
+// being confused by real rows (real people's checkout-return attempts share the same key prefix).
+const createdUserIds: string[] = [];
+
 // A rolled-back transaction with two throwaway users: A (who views the page) and B (someone else).
 async function inTx(fn: (tx: Tx, a: TestUser, b: TestUser) => Promise<void>) {
   try {
     await db.$transaction(async (tx) => {
       const mk = async (label: string): Promise<TestUser> => {
         const u = await tx.user.create({ data: { email: `check-return-${label}-${randomUUID()}@example.com`, name: "Check", passwordHash: "x" } });
+        createdUserIds.push(u.id);
         return { id: u.id, email: u.email };
       };
       await fn(tx, await mk("a"), await mk("b"));
@@ -273,7 +278,9 @@ async function main() {
   check("payment_log real row count unchanged", (await db.paymentLog.count()) === rowsBefore, `${rowsBefore} -> ${await db.paymentLog.count()}`);
   check("subscriptions real row count unchanged", (await db.subscription.count()) === subsBefore);
   check("no throwaway users left", (await db.user.count({ where: { email: { startsWith: "check-return-" } } })) === 0);
-  check("no rate-limit rows left for checkout-return keys", (await db.$queryRaw<{ n: number }[]>`SELECT count(*)::int AS n FROM rate_limit_attempts WHERE key LIKE 'checkout-return:user:%'`)[0].n === 0);
+  const ourKeys = createdUserIds.map((id) => `checkout-return:user:${id}`);
+  const leftover = (await db.$queryRaw<{ n: number }[]>`SELECT count(*)::int AS n FROM rate_limit_attempts WHERE key IN (${Prisma.join(ourKeys)})`)[0].n;
+  check("no rate-limit rows left for this script's own throwaway users", leftover === 0, `${ourKeys.length} throwaway users checked, ${leftover} rows left`);
 
   await db.$disconnect();
   console.log(failures ? `\n${failures} FAILED` : "\nall passed");

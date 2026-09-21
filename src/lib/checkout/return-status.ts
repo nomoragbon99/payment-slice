@@ -2,6 +2,7 @@ import { checkoutConfig } from "@/config/checkout";
 import { PLAN } from "@/config/plans";
 import { db } from "@/lib/db";
 import { verifyTransaction, type VerifiedTransaction } from "@/lib/paystack/client";
+import { evaluateTransaction } from "@/lib/checkout/evaluate";
 import { consume as realConsume, type ConsumeResult } from "@/lib/security/rate-limit";
 import { checkoutReferenceSchema } from "@/lib/validation/checkout";
 import type { Prisma } from "@/generated/prisma/client";
@@ -110,31 +111,33 @@ export async function getReturnStatus(
   return stateFromPaystack(result.transaction, order);
 }
 
-// Pure: turns what Paystack reported, plus our own record of the order, into a state.
+// Turns the shared evaluation (evaluate.ts) into what the page shows. The rules themselves live in one place.
 function stateFromPaystack(t: VerifiedTransaction, order: OrderSummary): ReturnState {
-  // A reply about some other transaction than the one we asked for cannot be trusted at all.
-  if (t.reference !== order.txRef) {
-    console.warn("/checkout/return: Paystack answered for a different reference", { txRef: order.txRef });
-    return { kind: "mismatch", order };
-  }
+  const evaluation = evaluateTransaction(order, t);
 
-  switch (t.status) {
-    case "success":
-      // Paid. It must be exactly the order we recorded before the customer could reach Paystack.
-      if (t.amountKobo !== order.amountKobo || t.currency !== order.currency) {
-        console.warn("/checkout/return: paid amount or currency differs from our record", { txRef: order.txRef });
-        return { kind: "mismatch", order };
-      }
+  switch (evaluation.kind) {
+    case "mismatch":
+      console.warn(
+        evaluation.field === "reference"
+          ? "/checkout/return: Paystack answered for a different reference"
+          : "/checkout/return: paid amount or currency differs from our record",
+        { txRef: order.txRef },
+      );
+      return { kind: "mismatch", order };
+    case "fulfil":
       // Confirmed by Paystack, but no 'fulfilled' row yet: the fulfilment step has not run (or not finished).
       return { kind: "activating", order };
-    case "failed":
-      return { kind: "failed", order };
-    case "abandoned":
-      return { kind: "not_completed", order };
-    case "reversed":
-      return { kind: "reversed", order };
-    default:
-      console.warn("/checkout/return: unrecognised Paystack status", { txRef: order.txRef, status: t.status });
-      return { kind: "processing", order };
+    case "not_paid":
+      switch (evaluation.paystackStatus) {
+        case "failed":
+          return { kind: "failed", order };
+        case "abandoned":
+          return { kind: "not_completed", order };
+        case "reversed":
+          return { kind: "reversed", order };
+        case "other":
+          console.warn("/checkout/return: unrecognised Paystack status", { txRef: order.txRef, status: evaluation.rawStatus });
+          return { kind: "processing", order };
+      }
   }
 }

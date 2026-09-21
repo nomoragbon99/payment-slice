@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { checkoutConfig } from "@/config/checkout";
+import { transactionEvidenceSchema, type TransactionEvidence } from "@/lib/paystack/evidence";
 
 // Direct REST calls with fetch, no SDK (see DECISIONS.md: the official SDK's newest release is an
 // empty package and it has no webhook helper). The secret key is only ever placed in the
@@ -71,25 +72,24 @@ export type VerifiedTransaction = {
   amountKobo: number;
   currency: string;
   providerTransactionId: string;
+  // The trimmed evidence to store with the payment: see evidence.ts. Contains no card or customer details.
+  evidence: TransactionEvidence;
 };
 
+// Failures carry a reason but NEVER the response body. A body that failed our shape check could still be a
+// full transaction with card details in it, and this app must not be able to store those by accident.
 export type VerifyFailure =
   | { ok: false; kind: "network_error"; message: string }
-  | { ok: false; kind: "not_found"; httpStatus: number; body: unknown }
-  | { ok: false; kind: "http_error"; httpStatus: number; body: unknown }
-  | { ok: false; kind: "bad_response"; httpStatus: number; reason: string; body: unknown };
+  | { ok: false; kind: "not_found"; httpStatus: number }
+  | { ok: false; kind: "http_error"; httpStatus: number }
+  | { ok: false; kind: "bad_response"; httpStatus: number; reason: string };
 
 export type VerifyResult = { ok: true; transaction: VerifiedTransaction } | VerifyFailure;
 
+// data is parsed with the evidence schema, which keeps only the whitelisted fields and drops the rest.
 const verifyBodySchema = z.object({
   status: z.literal(true),
-  data: z.object({
-    id: z.number().int(),
-    status: z.string(),
-    reference: z.string(),
-    amount: z.number().int(),
-    currency: z.string(),
-  }),
+  data: transactionEvidenceSchema,
 });
 
 const notFoundBodySchema = z.object({ code: z.literal("transaction_not_found") });
@@ -120,14 +120,14 @@ export async function verifyTransaction(
 
   if (!response.ok) {
     if (response.status === 400 && notFoundBodySchema.safeParse(body).success) {
-      return { ok: false, kind: "not_found", httpStatus: response.status, body };
+      return { ok: false, kind: "not_found", httpStatus: response.status };
     }
-    return { ok: false, kind: "http_error", httpStatus: response.status, body };
+    return { ok: false, kind: "http_error", httpStatus: response.status };
   }
 
   const parsed = verifyBodySchema.safeParse(body);
   if (!parsed.success) {
-    return { ok: false, kind: "bad_response", httpStatus: response.status, reason: "unexpected response shape", body };
+    return { ok: false, kind: "bad_response", httpStatus: response.status, reason: "unexpected response shape" };
   }
 
   const { data } = parsed.data;
@@ -139,6 +139,7 @@ export async function verifyTransaction(
       amountKobo: data.amount,
       currency: data.currency,
       providerTransactionId: String(data.id),
+      evidence: data,
     },
   };
 }

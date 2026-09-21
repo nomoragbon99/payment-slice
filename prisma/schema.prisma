@@ -161,8 +161,12 @@ model PaymentLog {
   // NOT NULL: an amount without its currency is invalid. CHECK currency ~ '^[A-Z]{3}$'.
   currency String
 
-  // jsonb snapshot of the provider's response, as dispute evidence. Nullable: some events have
-  // no response (e.g. a network failure before the provider answered).
+  // jsonb evidence for a dispute. Nullable: some events have none (e.g. a network failure before the
+  // provider answered). For a verified payment this is the TRIMMED transaction (id, status, reference,
+  // amount, currency, paid_at, channel, gateway_response, domain: src/lib/paystack/evidence.ts), NEVER the
+  // provider's full response: Paystack's replies carry the customer's email and a card `authorization`
+  // object (bin, last4, expiry, bank, and a reusable authorization_code that can charge the card again),
+  // and the brief forbids storing card details.
   rawResponse Json? @map("raw_response")
 
   // The event time. There is deliberately NO updated_at: rows never change.
@@ -193,8 +197,9 @@ model WebhookEvent {
   providerTransactionId String @map("provider_transaction_id")
 
   // data.status from the payload. Part of the key so a genuine status change for the same
-  // transaction is a new event, while a true replay is not.
-  // PROVISIONAL: to be confirmed against a real test-mode payload (see DECISIONS.md).
+  // transaction is a new event, while a true replay is not. Confirmed against two real test-mode
+  // webhooks: always "success" for charge.success (Paystack sends no event for a declined or abandoned
+  // payment), so in practice it never varies for the one event type we handle.
   providerStatus String @map("provider_status")
 
   // data.reference from the payload: the reference the provider says the event is about. It is
@@ -202,7 +207,11 @@ model WebhookEvent {
   // outcome 'unknown_tx_ref' and never fulfilled.
   txRef String @map("tx_ref")
 
-  // jsonb copy of the received body: evidence of exactly what was sent.
+  // jsonb evidence of what was received: the TRIMMED transaction from the payload's `data` (the same 9
+  // fields as payment_log.raw_response, src/lib/paystack/evidence.ts), NOT the full body. The full body
+  // holds the customer's email and phone and a card `authorization` object (bin, last4, expiry, bank, a
+  // card signature and a reusable authorization_code), which must never be stored (the brief forbids
+  // storing card details). The signature was already checked against the raw bytes before this row exists.
   payload Json
 
   receivedAt DateTime @default(now()) @map("received_at") @db.Timestamptz
