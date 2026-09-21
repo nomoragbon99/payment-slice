@@ -13,7 +13,9 @@ export function proxy(request: NextRequest) {
 
   if (!hasSessionCookie) {
     const signInUrl = new URL("/sign-in", request.url);
-    signInUrl.searchParams.set("next", request.nextUrl.pathname);
+    // Keep the query string too: /checkout/return?reference=... is useless once its reference is lost.
+    // (The sign-in form only follows this value if it is a path on this site: see safe-redirect.ts.)
+    signInUrl.searchParams.set("next", request.nextUrl.pathname + request.nextUrl.search);
     return NextResponse.redirect(signInUrl);
   }
 
@@ -21,5 +23,5 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard"],
+  matcher: ["/dashboard", "/checkout/return"],
 };
