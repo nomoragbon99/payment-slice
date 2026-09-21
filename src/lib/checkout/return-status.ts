@@ -1,23 +1,26 @@
 import { checkoutConfig } from "@/config/checkout";
+import type { PrismaClient } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
-import { verifyTransaction, type VerifiedTransaction } from "@/lib/paystack/client";
-import { evaluateTransaction } from "@/lib/checkout/evaluate";
+import { fulfilTransaction, type FulfilResult } from "@/lib/checkout/fulfil";
 import { orderFromInitiatedRow, type OrderSummary } from "@/lib/checkout/order";
 import { consume as realConsume, type ConsumeResult } from "@/lib/security/rate-limit";
 import { checkoutReferenceSchema } from "@/lib/validation/checkout";
-import type { Prisma } from "@/generated/prisma/client";
 
-// What the /checkout/return page shows. This module is READ-ONLY with respect to payments: it never
-// writes to payment_log or subscriptions and never grants anything. Whether a payment activates a
-// subscription is decided elsewhere (the fulfilment step), from Paystack's verified data; arriving
-// here from a redirect proves nothing and changes nothing.
+// What the /checkout/return page shows.
+//
+// THIS PAGE DECIDES NOTHING. Arriving here from a redirect proves nothing: the reference in the URL only
+// NAMES a payment. It hands that reference to fulfilTransaction(), the one function shared with the webhook,
+// which asks Paystack itself (server to server, with our secret key), checks the answer against the order we
+// recorded before the customer could pay, and only then activates the subscription. The page then reports
+// what that function found. Whichever of the webhook and this page arrives first does the work; the other
+// finds it done and changes nothing (see fulfil.ts).
 
 export type { OrderSummary };
 
 export type ReturnState =
-  // Our own ledger has a 'fulfilled' row: verified earlier, subscription activated.
+  // Verified and activated (now, or earlier by the webhook): our ledger records the fulfilment.
   | { kind: "successful"; order: OrderSummary }
-  // Paystack says paid and it matches our order, but the ledger has no 'fulfilled' row yet.
+  // Paystack confirmed the payment but our own write failed and was rolled back: it is safe to check again.
   | { kind: "activating"; order: OrderSummary }
   // Paystack reports a status we do not recognise (treated as "not final yet").
   | { kind: "processing"; order: OrderSummary }
@@ -34,7 +37,7 @@ export type ReturnState =
 type RateLimit = { windowSeconds: number; max: number };
 
 type Deps = {
-  db?: Pick<Prisma.TransactionClient, "paymentLog">;
+  db?: PrismaClient;
   fetch?: typeof fetch;
   consume?: (key: string, limit: RateLimit) => Promise<ConsumeResult>;
 };
@@ -59,7 +62,7 @@ export async function getReturnStatus(
   const txRef = parsedReference.data;
 
   // 2. Only THIS user's own rows count. Another person's reference is indistinguishable from one that
-  //    does not exist, so nobody can probe for other people's payments.
+  //    does not exist, so nobody can probe for, or trigger, other people's payments.
   const rows = await client.paymentLog.findMany({ where: { txRef, userId: input.userId }, orderBy: { createdAt: "asc" } });
   const initiated = rows.find((row) => row.eventType === "initiated");
   if (!initiated) return { kind: "unknown" };
@@ -67,10 +70,10 @@ export async function getReturnStatus(
   // What we show about the order always comes from OUR record, never from Paystack's response.
   const order = orderFromInitiatedRow(initiated);
 
-  // 3. Already fulfilled: our ledger is the record of an earlier independent verification. No Paystack call.
+  // 3. Already fulfilled: our ledger records an earlier independent verification. No Paystack call, no rate limit used.
   if (rows.some((row) => row.eventType === "fulfilled")) return { kind: "successful", order };
 
-  // 4. Not yet fulfilled: ask Paystack, but only if we are allowed to (rate limit) and able to (key set).
+  // 4. Not yet fulfilled: we will have to ask Paystack, so only if we are able to (key set) and allowed to (rate limit).
   if (!input.secretKey) {
     console.error("/checkout/return: PAYSTACK_SECRET_KEY is not set; cannot verify payments.");
     return { kind: "cannot_check", reason: "unavailable", order };
@@ -87,45 +90,48 @@ export async function getReturnStatus(
     return { kind: "cannot_check", reason: "unavailable", order };
   }
 
-  const result = await verifyTransaction(txRef, input.secretKey, { fetch: deps.fetch });
+  // 5. The shared function verifies with Paystack and, only if the payment is real and matches, activates it.
+  const result = await fulfilTransaction(
+    { reference: txRef, source: "return_page", expectedUserId: input.userId, secretKey: input.secretKey },
+    { db: client, fetch: deps.fetch },
+  );
 
-  if (!result.ok) {
-    // Paystack has never heard of a reference we DO have: our own initiation call never reached it.
-    if (result.kind === "not_found") return { kind: "unknown" };
-    console.error("/checkout/return: could not verify with Paystack:", { txRef, kind: result.kind });
-    return { kind: "cannot_check", reason: "unavailable", order };
-  }
-
-  return stateFromPaystack(result.transaction, order);
+  return stateFromFulfilment(result, order);
 }
 
-// Turns the shared evaluation (evaluate.ts) into what the page shows. The rules themselves live in one place.
-function stateFromPaystack(t: VerifiedTransaction, order: OrderSummary): ReturnState {
-  const evaluation = evaluateTransaction(order, t);
-
-  switch (evaluation.kind) {
-    case "mismatch":
-      console.warn(
-        evaluation.field === "reference"
-          ? "/checkout/return: Paystack answered for a different reference"
-          : "/checkout/return: paid amount or currency differs from our record",
-        { txRef: order.txRef },
-      );
-      return { kind: "mismatch", order };
-    case "fulfil":
-      // Confirmed by Paystack, but no 'fulfilled' row yet: the fulfilment step has not run (or not finished).
+// Turns what fulfilTransaction found into what the page shows.
+function stateFromFulfilment(result: FulfilResult, order: OrderSummary): ReturnState {
+  switch (result.outcome) {
+    case "fulfilled":
+    case "already_fulfilled":
+      return { kind: "successful", order };
+    case "write_failed":
+      // Paid according to Paystack, but our write did not go through (and left nothing behind): checking again retries it.
       return { kind: "activating", order };
+    case "mismatch":
+      return { kind: "mismatch", order };
     case "not_paid":
-      switch (evaluation.paystackStatus) {
-        case "failed":
-          return { kind: "failed", order };
-        case "abandoned":
-          return { kind: "not_completed", order };
-        case "reversed":
-          return { kind: "reversed", order };
-        case "other":
-          console.warn("/checkout/return: unrecognised Paystack status", { txRef: order.txRef, status: evaluation.rawStatus });
-          return { kind: "processing", order };
-      }
+      return notPaidState(result, order);
+    case "unknown":
+      // Paystack has never heard of a reference we DO have: our own initiation call never reached it.
+      return { kind: "unknown" };
+    case "cannot_verify":
+    case "duplicate_event":
+      // (duplicate_event only exists for webhooks; the page never produces it.)
+      return { kind: "cannot_check", reason: "unavailable", order };
+  }
+}
+
+function notPaidState(result: Extract<FulfilResult, { outcome: "not_paid" }>, order: OrderSummary): ReturnState {
+  switch (result.paystackStatus) {
+    case "failed":
+      return { kind: "failed", order };
+    case "abandoned":
+      return { kind: "not_completed", order };
+    case "reversed":
+      return { kind: "reversed", order };
+    case "other":
+      console.warn("/checkout/return: unrecognised Paystack status", { txRef: order.txRef, status: result.rawStatus });
+      return { kind: "processing", order };
   }
 }

@@ -17,8 +17,11 @@ type SearchParams = Promise<{ reference?: string | string[]; trxref?: string | s
 // Where the person is sent to try again. The subscription screen does not exist yet, so for now: the dashboard.
 const TRY_AGAIN_HREF = "/dashboard";
 
-// This page only REPORTS. It never activates a subscription: arriving here from a redirect proves nothing,
-// and whether a payment activates a plan is decided by the fulfilment step from Paystack's verified data.
+// This page decides NOTHING itself. Arriving here from a redirect proves nothing: the reference in the URL only
+// names a payment. getReturnStatus() hands it to fulfilTransaction(), the same function the webhook uses, which
+// asks Paystack directly and activates the plan only if Paystack confirms exactly the order we recorded. The page
+// then reports what it found: whichever of the webhook and this visit comes first does the work, the other
+// finds it done.
 export default async function CheckoutReturnPage({ searchParams }: { searchParams: SearchParams }) {
   const params = await searchParams;
 
