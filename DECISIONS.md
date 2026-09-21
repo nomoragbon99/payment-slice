@@ -121,5 +121,40 @@
 - Rejected and why: renaming only. An id without its provider is ambiguous, since two providers could issue the same number and the "fulfilled once" index would then block a real payment. Letting Prisma generate the migration: it would DROP COLUMN flw_transaction_id and add a new one, losing any data. Editing the applied migration: breaks its recorded checksum and the append-only migration discipline.
 - Files: prisma/schema.prisma, prisma/migrations/20260921050000_provider_neutral_columns/migration.sql
 
+### Sign-in code copied from auth-slice, and what was left out
+- Decision: which parts of auth-slice's authentication to bring into this slice (adds detail to the earlier "Reuse of auth-slice's session mechanism" entry).
+- Chosen: copy only what identifies a signed-in user, as the assessment brief permits: argon2id password hashing (same OWASP-minimum cost settings), session tokens (32 random bytes in an httpOnly, SameSite=Lax cookie; only the SHA-256 of the token is stored as sessions.id; fixed 7-day lifetime; expired sessions deleted when used), the same-origin CSRF check, the open-redirect guard, the sign-in and sign-out routes with a constant-time dummy hash for unknown emails, the proxy gate plus the real database check in the page, and a minimal dashboard. Session cookie is named payment_slice_session because browsers share localhost cookies across ports and auth-slice already uses auth_slice_session.
+- Rejected and why: copying auth-slice's whole auth module (sign-up, email verification, password reset, rate limiting, idempotency keys) because none of it is what this slice is graded on and it would need tables and settings this project does not have.
+- Files: src/config/auth.ts, src/lib/auth/*, src/lib/security/origin.ts, src/lib/security/safe-redirect.ts, src/lib/validation/auth.ts, src/lib/db.ts, src/lib/http.ts, src/app/api/auth/signin/route.ts, src/app/api/auth/signout/route.ts, src/proxy.ts, src/app/(auth)/sign-in/*, src/app/dashboard/*
+
+### Sign-in form: plain useState/fetch, not react-hook-form
+- Decision: how to build the sign-in form.
+- Chosen: one small client component using useState and fetch, validated first by the same Zod schema the server uses, then re-checked by the server.
+- Rejected and why: copying auth-slice's react-hook-form form, which brings two more packages (react-hook-form, @hookform/resolvers) and about five helper components for a two-field form that is borrowed infrastructure here.
+- Files: src/app/(auth)/sign-in/SignInForm.tsx
+
+### No rate limiting on sign-in
+- Decision: whether sign-in gets rate limiting.
+- Chosen: none. Sign-in is borrowed infrastructure, the users are seeded test accounts and the app runs in Paystack test mode. Known consequence: unlimited sign-in attempts. Rate limiting will be built where the brief requires it, on checkout initiation, and will need its own store (a new table and migration), planned in that task.
+- Rejected and why: copying auth-slice's rate limiter, which needs the rate_limit_buckets table and cleanup settings for something not graded here.
+- Files: src/app/api/auth/signin/route.ts (comment marks the omission)
+
+### AUTH_SECRET removed
+- Decision: whether this project needs an AUTH_SECRET.
+- Chosen: remove it. In auth-slice, AUTH_SECRET only keys the HMAC that protects the emailed 6-digit verification codes; sessions are random 256-bit tokens stored as their SHA-256 and nothing is signed. We do not copy email verification, so the variable would be unused config. The earlier .env.example comment saying it "signs session cookies" was wrong (see BUILD_LOG.md).
+- Rejected and why: keeping it "for later" (unused secrets invite confusion); switching sessions to signed cookies (adds a mechanism auth-slice does not use and this slice does not need).
+- Files: .env.example, src/lib/auth/tokens.ts
+
+### Seed users with a fixed, committed test password
+- Decision: how local test users are created and what their password is.
+- Chosen: scripts/seed.ts upserts alice@, bob@ and carol@example.com with one fixed, documented test password, hashed with the same argon2id function as sign-in. It refuses to run unless DATABASE_URL points at localhost or 127.0.0.1, or when NODE_ENV=production. Sign-up is not part of this slice, so seeding is the only way users exist.
+- Rejected and why: random passwords printed once (harder to test by hand and for a reviewer to reproduce); a sign-up page (out of scope).
+- Files: scripts/seed.ts, package.json (db:seed)
+
 ## Deliberately excluded
-(none yet)
+- Sign-up flow: not in the brief; test users are seeded instead.
+- Email verification: not needed to identify a signed-in user in this slice.
+- Password reset: not in the brief.
+- Rate limiting on sign-in: borrowed infrastructure (see the decision above); rate limiting is built on checkout initiation instead.
+- Idempotency-key table from auth-slice: unrelated to the webhook idempotency table this slice needs.
+- /api/auth/me endpoint: nothing in this slice calls it.
