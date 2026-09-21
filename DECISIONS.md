@@ -151,6 +151,38 @@
 - Rejected and why: random passwords printed once (harder to test by hand and for a reviewer to reproduce); a sign-up page (out of scope).
 - Files: scripts/seed.ts, package.json (db:seed)
 
+### Checkout initiation: order of operations and failure handling
+- Decision: what POST /api/checkout does, in what order, and what happens when Paystack fails.
+- Chosen: origin check, signed-in check, rate limit, strict body validation, refuse users with an active subscription (409), check configuration BEFORE writing anything, insert the 'initiated' payment_log row BEFORE calling Paystack (its raw_response is the outgoing request, with no secrets; the customer's email is in it), then call POST /transaction/initialize (10 s timeout). On ANY failure (network error, timeout, 4xx, 5xx, non-JSON, wrong shape, a reference that is not ours, a URL that is not https on paystack.com) the code APPENDS a 'failed' row with the same tx_ref, amount and currency and the failure as jsonb evidence, and answers 502 with a generic message; nothing from Paystack's response is shown to the client. The 'initiated' row is never touched, because payment_log is append-only. If the failed-row write itself fails, the error is logged and the customer still gets the 502. If the initiated-row write fails, Paystack is never called and the route answers 500.
+- Rejected and why: calling Paystack first and logging afterwards (if the log write then failed there would be no record of what we expected before the customer could pay); updating the initiated row to failed (forbidden by the append-only rule and blocked by the trigger); showing Paystack's error text to the customer (leaks provider details and may confuse; our own misconfiguration such as a bad key is not the customer's problem).
+- Known limits: (1) a timeout is ambiguous: Paystack may have created the transaction anyway, but the customer never receives its URL, so it can never be paid; the log honestly shows initiated then failed. (2) a crash between the two writes leaves an 'initiated' row with no follow-up, which a plain query can list. (3) the 409 only stops users who are already active: two browser tabs can still both start and pay a checkout, so the fulfilment task must decide what a second successful payment means (extend the period, or flag it for refund).
+- Files: src/lib/checkout/initiate.ts, src/app/api/checkout/route.ts, src/lib/paystack/client.ts, src/lib/payment-log.ts
+
+### Prices live only on the server, and the request body is strict
+- Decision: where the price comes from and what the client may send.
+- Chosen: src/config/plans.ts holds the one paid plan ('pro', NGN) with monthly = 300000 kobo (NGN 3,000) and yearly = 3000000 kobo (NGN 30,000), as integers in kobo with the currency beside them. The client sends only billingInterval ('monthly' or 'yearly'); the body is a strict Zod object, so an extra key such as amount or planId gets a 400 instead of being silently ignored.
+- Rejected and why: accepting an amount or plan from the client (anyone could pay NGN 1 for Pro by editing the request); a plans table in the database (over-built for one plan, and prices would then be editable data instead of reviewed code).
+- Files: src/config/plans.ts, src/lib/validation/checkout.ts
+
+### Rate limiting on checkout: fixed-window table, per user, 5 per 10 minutes
+- Decision: how checkout initiation is rate limited (the brief requires it there; sign-in deliberately has none).
+- Chosen: a rate_limit_buckets table with primary key (key, window_start) and CHECK count > 0. Each attempt is one atomic INSERT ... ON CONFLICT DO UPDATE ... RETURNING count, so concurrent requests cannot both read the same count. Key is checkout:user:<user id>, limit 5 per 10 minutes, checked after the session check and before validation, so every attempt counts, including invalid ones and ones where Paystack later fails. Old buckets are swept opportunistically (at most every 5 minutes per process, failures only logged). Checked with 8 simultaneous requests: exactly 5 allowed and 3 answered 429 with Retry-After, and the stored count was 9 including a follow-up, so no attempt was lost.
+- Rejected and why: a per-IP limit (the endpoint already requires sign-in, and IP limits depend on trusting X-Forwarded-For, which anyone can spoof unless a proxy we control sets it); a sliding window (needs timestamps per key; the fixed window needs one row and one statement); an in-memory counter (lost on restart, not shared between processes).
+- Known limit: a fixed window lets a client burst up to 2x the limit across a window boundary (5 at the end of one window, 5 at the start of the next).
+- Files: prisma/schema.prisma, prisma/migrations/*_add_rate_limit_buckets/migration.sql, src/lib/security/rate-limit.ts, src/config/checkout.ts
+
+### Already-subscribed users get a 409
+- Decision: what happens when a user with an active subscription starts a checkout.
+- Chosen: 409 ALREADY_SUBSCRIBED when their subscription has status 'active' and current_period_end is in the future; nothing is written and Paystack is not called. 'canceled', 'past_due' and 'active but period over' users may start a checkout.
+- Rejected and why: allowing it (an accidental second payment for the same period).
+- Files: src/lib/checkout/initiate.ts
+
+### payment_log has one insert path, and the logic takes an injectable database client
+- Decision: how application code writes payment_log and how the failure paths are tested.
+- Chosen: appendPaymentLog() in src/lib/payment-log.ts is the only place that calls paymentLog.create, and nothing in src calls update or delete on the model (checked with git grep). It and initiateCheckout accept an optional Prisma client, so scripts/check-checkout.ts runs every case (with a fake Paystack) inside a transaction that is rolled back; without that, test rows could never be removed because of the append-only trigger.
+- Rejected and why: an ESLint rule forbidding paymentLog.update (a grep check is enough at this size); testing failures by pointing the app at a broken Paystack URL (needs .env edits I must not make, and would leave permanent rows).
+- Files: src/lib/payment-log.ts, src/lib/checkout/initiate.ts, scripts/check-checkout.ts
+
 ## Deliberately excluded
 - Sign-up flow: not in the brief; test users are seeded instead.
 - Email verification: not needed to identify a signed-in user in this slice.
@@ -158,3 +190,4 @@
 - Rate limiting on sign-in: borrowed infrastructure (see the decision above); rate limiting is built on checkout initiation instead.
 - Idempotency-key table from auth-slice: unrelated to the webhook idempotency table this slice needs.
 - /api/auth/me endpoint: nothing in this slice calls it.
+- Per-IP rate limiting on checkout: the endpoint requires sign-in and IP limits depend on a trusted proxy (see the rate limiting decision).

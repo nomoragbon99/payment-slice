@@ -71,3 +71,24 @@ Append-only. Every error, surprise or wrong assumption during the build. Raw mat
 - Cause: newer npm asks for an explicit allow-list before running dependencies' install scripts; none has been approved in this project.
 - Fix: none; I did not run `npm approve-scripts`. Revisit if a fresh clone fails to install or generate.
 - Commit: deb8dd2
+
+### A ~180-line shell command failed to parse and wrote nothing (2026-09-21 09:05)
+- Symptom: `/usr/bin/bash: -c: line 177: unexpected EOF while looking for matching `''` when I tried to create five source files (plans.ts, checkout.ts, rate-limit.ts, payment-log.ts, paystack/client.ts) with shell heredocs in one command.
+- Investigation: checked `git status` and looked for each target file: none existed, so the whole command had failed to parse before running anything and there was nothing half-written to clean up. Did NOT find which line caused the quoting problem (the heredocs used a quoted terminator, so the content should have been literal); I did not bisect it.
+- Cause: unknown quoting problem inside one very long command of my own making.
+- Fix: created the files with the file-writing tool instead of shell heredocs. All five were then typechecked and unit-checked before committing.
+- Commit: f8949d6
+
+### My own edit script corrupted scripts/check-checkout.ts, and one check I wrote could never fail (2026-09-21 09:40)
+- Symptom: after adding a before/after row-count check, `tsc` reported `scripts/check-checkout.ts(208,29): error TS1002: Unterminated string literal` and `npm run check:checkout` failed with `Transform failed with 1 error ... Unterminated string literal`.
+- Investigation: read the file around line 200: the tail of the script had been duplicated, with a `console.log("` string cut in half by a newline. My node edit located a section with `indexOf` and sliced the file around it; the search text did not match (it contained an escaped newline written differently in the file), so indexOf returned -1 and the slice boundaries were wrong. Separately, re-reading the original last check showed `check("...", left === 0 || true, ...)`, which passes whatever the value is.
+- Cause: my mistake in both cases: an unchecked indexOf result in a scripted edit, and a placeholder assertion written as always-true.
+- Fix: repaired the tail by hand with an exact-text edit, and replaced the always-true check with a real one: the payment_log row count is read before the run and must be identical after it (it was 0 and 0). All 66 checks then passed.
+- Commit: 7cacc43
+
+### Plain GET of the Paystack payment page returned 403 (2026-09-21 09:55)
+- Symptom: after the real test-mode call returned an authorizationUrl on checkout.paystack.com, `curl` of that URL got HTTP 403.
+- Investigation: the same URL had just been produced by Paystack's own API for a valid test transaction with a matching reference, and the endpoint answered 200 with both real calls. Not checked: whether the page renders in a browser, or whether the 403 is bot protection on non-browser clients (a likely explanation, not confirmed).
+- Cause: unknown; not proven to be a problem with our request.
+- Fix: none. The owner should open the URL in a browser during the manual test to confirm the payment page loads. I do not claim it does.
+- Commit: 7cacc43
