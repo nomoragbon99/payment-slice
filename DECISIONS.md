@@ -198,6 +198,32 @@
 - Evidence: with the lock, 20 trials of 30 simultaneous attempts allowed exactly 5 every time. The same count-then-insert WITHOUT the lock let up to 10-13 through in 20 of 20 trials, with and without an artificial pause, so the test can detect the race.
 - Files: src/lib/security/rate-limit.ts, src/config/checkout.ts, scripts/check-rate-limit.ts
 
+### Checkout return page: read-only, honest about what we know
+- Decision: what /checkout/return does when Paystack sends a person back after they attempt payment.
+- Chosen: the page only REPORTS and never writes to payment_log or subscriptions; arriving from a redirect proves nothing. Order of work: (1) the reference from the query string (reference, falling back to trxref; a repeated parameter counts as none) must match our own format; (2) look up only the signed-in user's own rows for that reference, so someone else's reference is indistinguishable from a nonexistent one; (3) if our ledger has a 'fulfilled' row, show success with no Paystack call and no rate-limit use; (4) otherwise, rate limited, call GET /transaction/verify/{reference}; (5) cross-check reference, amount and currency against what we recorded at initiation; (6) map to a state. States: successful (ledger says fulfilled), activating (Paystack says success and it matches, but no fulfilled row yet; re-checks every 5 s, at most 6 times), processing (any status we do not recognise), not completed (abandoned), failed, reversed, mismatch (paid but reference, amount or currency differ), cannot check (Paystack unreachable or answering nonsense, or our limit reached; says 'unknown', never 'failed'), unknown. All wording is ours; nothing from Paystack's response is shown. The order details shown (plan, amount, reference) come from OUR row, never from Paystack's reply. 'Try again' goes to /dashboard until the subscription screen exists.
+- Rate limit: 12 Paystack checks per 10 minutes per user, using the sliding-window limiter, key checkout-return:user:<id>. Reading our own database is not limited. When the limit is hit no Paystack call is made and the page says so honestly.
+- Fulfil-on-return is deliberately NOT done here (owner's decision). It moves to the fulfilment task, which will be one shared function, fulfilTransaction(reference), callable from both the webhook and this page. It must prevent double fulfilment in three layers: a per-tx_ref advisory lock (same technique as the rate limiter) so two callers run one after the other; a re-check of the ledger inside the lock so the second caller finds the 'fulfilled' row and does nothing; and the existing partial unique indexes on payment_log as the last backstop, with the subscription write in the same transaction. Note: Paystack cannot reach localhost without a tunnel, so until the page also triggers fulfilment (or a tunnel exists) a paid test payment stays on 'activating' in local development.
+- Rejected and why: activating the subscription from this page now (the owner ruled it out for this task, and the decision belongs with the fulfilment design); trusting the redirect's own status parameters (there are none we would trust); showing Paystack's gateway text (its wording is not ours to promise, and could confuse); showing 'failed' when we simply could not reach Paystack (that would tell someone their money failed when we do not know).
+- Files: src/lib/checkout/return-status.ts, src/app/checkout/return/page.tsx, src/app/checkout/return/RefreshControls.tsx, src/lib/format-money.ts, src/config/checkout.ts
+
+### What Paystack's verify endpoint really returns (found with real test-mode calls)
+- Decision: how the verify client tells 'paid' from 'not paid' from 'unknown reference'.
+- Chosen: payment success is data.status === "success" and nothing else. A transaction that exists answers HTTP 200 with the OUTER status:true and message 'Verification successful' even when the customer never paid (data.status is then 'abandoned'), so the outer flag only means the API call worked. An unknown reference answers HTTP 400 (not 404) with code 'transaction_not_found'; the client matches that machine code, not the HTTP status and not the English message. Seen fields: data.id (a number, kept as text), data.status, data.reference, data.amount (integer kobo), data.currency, and many more we ignore. The spec lists statuses success, failed, abandoned and reversed; any other value is treated as 'still processing'.
+- Rejected and why: trusting the spec's 404 for a missing reference (real calls returned 400, so a 404 check would never fire and 'not found' would be reported as an outage); matching the message text (English wording can change, the code is the stable contract); treating outer status:true as success (that would call every abandoned checkout paid).
+- Files: src/lib/paystack/client.ts
+
+### The payment status page is never cached
+- Decision: how to stop a browser or proxy from storing /checkout/return.
+- Chosen: Cache-Control: no-store, set for that path in next.config.ts. Verified in a production build (page and its redirect both send it; other pages such as /sign-in are unaffected). Next's dev server ignores it and always sends 'no-cache, must-revalidate' for dynamic pages (the dashboard too), so the header cannot be seen in dev mode.
+- Rejected and why: also setting it in proxy.ts (a production build showed the config alone is enough, and two mechanisms for one job need explaining); relying on Next's default for dynamic pages (not guaranteed to be no-store, and this page carries someone's order).
+- Files: next.config.ts
+
+### Sign-in keeps the query string
+- Decision: what happens when a signed-out person lands on /checkout/return?reference=...
+- Chosen: proxy.ts (and the page, for forged or expired cookies) redirects to /sign-in?next=<path and query>, so the reference survives signing in. The sign-in form still only follows a next value that is a path on this site (open-redirect guard, checked with the query-string form and the // form).
+- Rejected and why: dropping the query (the reference would be lost and the person would land on 'we can't find that payment' after signing in).
+- Files: src/proxy.ts, src/app/checkout/return/page.tsx
+
 ## Deliberately excluded
 - Sign-up flow: not in the brief; test users are seeded instead.
 - Email verification: not needed to identify a signed-in user in this slice.
