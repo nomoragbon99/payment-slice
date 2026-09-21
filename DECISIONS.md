@@ -191,6 +191,13 @@
 - Trade-offs accepted: each attempt is now a short database transaction (lock, count, insert) instead of one upsert; attempts from the SAME user are handled one at a time (other users are unaffected); a database error blocks the request (the limiter fails closed); denied attempts are not recorded in the table.
 - Files (planned): prisma/schema.prisma, a new migration, src/lib/security/rate-limit.ts, src/config/checkout.ts, scripts/check-rate-limit.ts
 
+### Sliding window: implementation details
+- Decision: choices made while building the sliding-window limiter (follows "Rate limiting: exact sliding window replaces the fixed window").
+- Chosen: (1) housekeeping is a DELETE of the same key's expired rows inside each attempt's transaction, replacing the global opportunistic sweep and its settings, so the table holds at most `max` rows per key plus a few stale ones for users who never return; (2) the lock and all statements run in one interactive Prisma transaction with a 5 second limit, so a stalled holder makes waiting requests fail closed instead of hanging; (3) the lock number is hashtextextended(key, 0), a 64-bit hash of the key; (4) the lock is read back through `SELECT 1 FROM (SELECT pg_advisory_xact_lock(...))` because Prisma cannot deserialize the void value the function returns; (5) the test script includes a deliberately lock-free negative control.
+- Rejected and why: a global cleanup job (more moving parts for a table this small); a Postgres function for the whole check (harder to read than TypeScript); relying on the concurrency test passing alone without a control (a test that cannot fail proves nothing).
+- Evidence: with the lock, 20 trials of 30 simultaneous attempts allowed exactly 5 every time. The same count-then-insert WITHOUT the lock let up to 10-13 through in 20 of 20 trials, with and without an artificial pause, so the test can detect the race.
+- Files: src/lib/security/rate-limit.ts, src/config/checkout.ts, scripts/check-rate-limit.ts
+
 ## Deliberately excluded
 - Sign-up flow: not in the brief; test users are seeded instead.
 - Email verification: not needed to identify a signed-in user in this slice.
