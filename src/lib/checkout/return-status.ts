@@ -1,8 +1,8 @@
 import { checkoutConfig } from "@/config/checkout";
-import { PLAN } from "@/config/plans";
 import { db } from "@/lib/db";
 import { verifyTransaction, type VerifiedTransaction } from "@/lib/paystack/client";
 import { evaluateTransaction } from "@/lib/checkout/evaluate";
+import { orderFromInitiatedRow, type OrderSummary } from "@/lib/checkout/order";
 import { consume as realConsume, type ConsumeResult } from "@/lib/security/rate-limit";
 import { checkoutReferenceSchema } from "@/lib/validation/checkout";
 import type { Prisma } from "@/generated/prisma/client";
@@ -12,13 +12,7 @@ import type { Prisma } from "@/generated/prisma/client";
 // subscription is decided elsewhere (the fulfilment step), from Paystack's verified data; arriving
 // here from a redirect proves nothing and changes nothing.
 
-export type OrderSummary = {
-  txRef: string;
-  planName: string;
-  billingInterval: string;
-  amountKobo: number;
-  currency: string;
-};
+export type { OrderSummary };
 
 export type ReturnState =
   // Our own ledger has a 'fulfilled' row: verified earlier, subscription activated.
@@ -71,13 +65,7 @@ export async function getReturnStatus(
   if (!initiated) return { kind: "unknown" };
 
   // What we show about the order always comes from OUR record, never from Paystack's response.
-  const order: OrderSummary = {
-    txRef,
-    planName: initiated.planId === PLAN.id ? PLAN.name : initiated.planId,
-    billingInterval: initiated.billingInterval,
-    amountKobo: initiated.amount,
-    currency: initiated.currency,
-  };
+  const order = orderFromInitiatedRow(initiated);
 
   // 3. Already fulfilled: our ledger is the record of an earlier independent verification. No Paystack call.
   if (rows.some((row) => row.eventType === "fulfilled")) return { kind: "successful", order };
