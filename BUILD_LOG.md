@@ -175,3 +175,10 @@ Append-only. Every error, surprise or wrong assumption during the build. Raw mat
 - Cause: a transient network problem on this machine, not the API and not our code (our own client treats it as a retryable failure and never as a payment result).
 - Fix: none needed.
 - Commit: n/a
+
+### Two real payments fulfilled; my first privacy check was too crude (2026-09-21 21:25)
+- Symptom: after fulfilling the two real paid test payments, my summary query for card or customer fields returned `ledger_rows_with_email_or_card_fields = 4` and `event_rows_with_email_or_card_fields = 2`, which looked like a leak.
+- Investigation: the pattern matched the bare word `card` and any `@`, so I re-checked precisely instead of trusting either the number or my hopes. Keys: no key outside the 9 allowed evidence keys (plus our own outgoing-request keys on 'initiated' and `source` on 'fulfilled') exists in any row. Values: the 2 `@` matches are the customer's sign-in email in OUR OWN outgoing request on the 2 'initiated' rows (approved earlier); the 4+2 `card` matches are the VALUE of the channel field ("card", the payment method). Card-detail field names (bin, last4, expiry, bank, brand, authorization_code, card_type, signature): 0 rows in payment_log and 0 in webhook_events. Webhook events hold no email at all.
+- Cause: my own imprecise regex, a false alarm, not a leak.
+- Fix: none to the data or code. The precise queries are the ones recorded in docs/evidence/subscription-extension.md. The evidence itself (before, after payment 1, after payment 2, the ledger and the idempotency table) is saved there as well.
+- Commit: see docs/evidence/subscription-extension.md
