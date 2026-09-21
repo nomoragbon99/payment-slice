@@ -135,10 +135,16 @@ model PaymentLog {
   // (initiated, verified, fulfilled), so it only has a plain index.
   txRef String @map("tx_ref")
 
-  // Flutterwave's transaction id. Nullable because it does not exist at initiation. Text, not
-  // an integer: we do not assume its type or size.
-  // CHECK event_type NOT IN ('verified','fulfilled') OR flw_transaction_id IS NOT NULL.
-  flwTransactionId String? @map("flw_transaction_id")
+  // Which payment provider this row is about. CHECK IN ('paystack'). NOT NULL with no default:
+  // an id without its provider is ambiguous (two providers could issue the same number), so
+  // every insert must say which one. Adding a provider later is one CHECK edit in a migration.
+  provider String
+
+  // The provider's own transaction id. Nullable because it does not exist at initiation. Text,
+  // not an integer: we do not assume its type or size. Provider-neutral name (was
+  // flw_transaction_id, renamed in the switch from Flutterwave to Paystack).
+  // CHECK event_type NOT IN ('verified','fulfilled') OR provider_transaction_id IS NOT NULL.
+  providerTransactionId String? @map("provider_transaction_id")
 
   // CHECK IN ('initiated','verified','fulfilled','failed').
   eventType String @map("event_type")
@@ -149,14 +155,14 @@ model PaymentLog {
 
   // Integer minor units (kobo), never a decimal. Int caps at about NGN 21.4 million, far above
   // any subscription price. CHECK amount > 0. The amount this event is about: what WE asked for
-  // at initiation, what Flutterwave REPORTED at verification.
+  // at initiation, what the provider REPORTED at verification.
   amount Int
 
   // NOT NULL: an amount without its currency is invalid. CHECK currency ~ '^[A-Z]{3}$'.
   currency String
 
-  // jsonb snapshot of Flutterwave's response, as dispute evidence. Nullable: some events have
-  // no response (e.g. a network failure before Flutterwave answered).
+  // jsonb snapshot of the provider's response, as dispute evidence. Nullable: some events have
+  // no response (e.g. a network failure before the provider answered).
   rawResponse Json? @map("raw_response")
 
   // The event time. There is deliberately NO updated_at: rows never change.
@@ -169,26 +175,31 @@ model PaymentLog {
   @@map("payment_log")
 }
 
-// ───────── webhook_events: idempotency ledger for Flutterwave webhooks ─────────
+// ───────── webhook_events: idempotency ledger for payment-provider webhooks ─────────
 // The handler CLAIMS an event by inserting a row (never "check, then insert", which two
 // concurrent requests can both pass). The unique index below makes the second insert wait for
 // the first and then conflict. The claim and the fulfilment writes run in one transaction, so a
-// crash rolls both back and Flutterwave's retry starts clean.
+// crash rolls both back and the provider's retry starts clean.
 model WebhookEvent {
   id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
 
-  // Flutterwave's top-level `event` field, e.g. 'charge.completed'.
+  // Which provider sent it. CHECK IN ('paystack'); part of the key (see PaymentLog.provider).
+  provider String
+
+  // The provider's top-level `event` field, e.g. 'charge.success'.
   eventType String @map("event_type")
 
-  // data.id from the payload. Text for the same reason as payment_log.flw_transaction_id.
-  flwTransactionId String @map("flw_transaction_id")
+  // data.id from the payload. Text for the same reason as payment_log.provider_transaction_id.
+  providerTransactionId String @map("provider_transaction_id")
 
   // data.status from the payload. Part of the key so a genuine status change for the same
-  // transaction (e.g. pending then successful) is a new event, while a true replay is not.
-  // PROVISIONAL: to be confirmed against a real test-mode payload (see BUILD_LOG.md / DECISIONS.md).
+  // transaction is a new event, while a true replay is not.
+  // PROVISIONAL: to be confirmed against a real test-mode payload (see DECISIONS.md).
   providerStatus String @map("provider_status")
 
-  // data.tx_ref, for joining to payment_log when debugging.
+  // data.reference from the payload: the reference the provider says the event is about. It is
+  // UNTRUSTED input until matched to a payment_log row; an unrecognised one is recorded with
+  // outcome 'unknown_tx_ref' and never fulfilled.
   txRef String @map("tx_ref")
 
   // jsonb copy of the received body: evidence of exactly what was sent.
@@ -205,6 +216,6 @@ model WebhookEvent {
   outcome String?
 
   // THE idempotency guarantee: one row per provider event, enforced by the database.
-  @@unique([eventType, flwTransactionId, providerStatus])
+  @@unique([provider, eventType, providerTransactionId, providerStatus])
   @@map("webhook_events")
 }

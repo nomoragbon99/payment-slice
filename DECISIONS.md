@@ -94,5 +94,32 @@
 - Rejected and why: pointing at auth-slice's database (couples two projects that must stay separate); copying the whole auth-slice schema (unneeded tables, out of scope).
 - Files: prisma/schema.prisma
 
+### Payment provider: Flutterwave to Paystack (supersedes the three Flutterwave entries above)
+- Decision: which payment provider this slice integrates with.
+- Chosen: Paystack, on a new account used by no other project. Decided before any provider-specific integration code existed; only the schema and research were done.
+- Rejected and why: staying on Flutterwave. Its webhook URL is set per account, and that account was shared with another live project, so this slice's test webhooks could reach the other project's handler and the other project's live events could reach ours. A dedicated Paystack account removes the collision. Paystack's webhook URL is also set per account, so the same problem would return if this account were ever shared.
+- Consequences: the earlier entries "Flutterwave integration: official SDK vs direct REST calls", "Flutterwave API version" and "Webhook authenticity check and encryption key" describe a provider we no longer use and are kept only as history. Paystack sends amounts in kobo already (Flutterwave used major units), which removes one conversion step; amounts are still validated as integers before insert.
+- Files: AGENTS.md, .env.example, src/app/layout.tsx, prisma/migrations/20260921050000_provider_neutral_columns/migration.sql
+
+### Paystack integration: official SDK vs direct REST calls
+- Decision: how the server talks to Paystack.
+- Chosen: call the REST API directly with fetch, no SDK. Endpoints: POST https://api.paystack.co/transaction/initialize (amount in kobo, email, our reference; returns authorization_url to redirect the customer to) and GET /transaction/verify/{reference} (check status, amount, currency and reference before granting anything), with the secret key as a Bearer token.
+- Rejected and why: @paystack/paystack-sdk, the official package (Paystack team, PaystackOSS/paystack-node, MIT, ships TypeScript types, no runtime dependencies, no telemetry found, contacts only api.paystack.co). Its newest release, 1.2.1 (published 2026-08-24), is broken: the tarball contains no compiled code and no source (11 files, about 7 KB) while `main` still points at ./dist/index.js. The last working release, 1.2.0 (June 2024), is 1.9 MB across 329 machine-generated files for two calls we need, and it has no webhook signature helper, so the security-critical code is ours either way. Community packages (paystack-sdk, paystack, paystack-node) were rejected as unofficial third parties in a payment path.
+- Limits of the research: paystack.com/docs returned HTTP 403 to my fetcher, so the initialize/verify shapes come from Paystack's official OpenAPI spec (PaystackOSS/openapi) and the webhook details from search excerpts of the docs plus two independent guides. To be confirmed against a real test-mode webhook.
+- Files: (none yet; applies to the future Paystack client code)
+
+### Webhook authenticity: HMAC-SHA512 (supersedes the Flutterwave verif-hash entry)
+- Decision: how to authenticate an incoming webhook.
+- Chosen: compute HMAC-SHA512 over the raw request body, keyed with PAYSTACK_SECRET_KEY, hex-encode it and compare in constant time (crypto.timingSafeEqual) with the x-paystack-signature header. The body must be read raw, before any JSON parsing. There is no separate webhook secret, so .env.example has only PAYSTACK_SECRET_KEY. A valid signature is not enough on its own: the transaction is still verified server-to-server before entitlement is granted.
+- Safeguard for unrecognised references: the handler never trusts a reference it does not recognise. If data.reference matches no payment_log row of ours, the event is recorded in webhook_events with outcome 'unknown_tx_ref', the handler answers 200 (so Paystack stops retrying) and nothing is fulfilled. This holds even though the account is dedicated.
+- Rejected and why: comparing a fixed shared value (Flutterwave's model, which a leaked value defeats and which does not tie the value to the message body); using the signature alone to grant entitlement (our rule is independent verification); a separate PAYSTACK_PUBLIC_KEY (only needed for client-side popups, and our flow redirects to authorization_url from the server).
+- Files: .env.example
+
+### Provider-neutral column names plus a provider column
+- Decision: how to name the provider's transaction id, and whether to record which provider a row is about.
+- Chosen: rename flw_transaction_id to provider_transaction_id on payment_log and webhook_events, and add provider TEXT NOT NULL (CHECK IN ('paystack'), no default, so every insert must say which provider) to both. The uniqueness rules now use (provider, provider_transaction_id): one fulfilment per provider transaction, and webhook key (provider, event_type, provider_transaction_id, provider_status). Migration written by hand with RENAME COLUMN, as a new migration; the applied init migration is untouched.
+- Rejected and why: renaming only. An id without its provider is ambiguous, since two providers could issue the same number and the "fulfilled once" index would then block a real payment. Letting Prisma generate the migration: it would DROP COLUMN flw_transaction_id and add a new one, losing any data. Editing the applied migration: breaks its recorded checksum and the append-only migration discipline.
+- Files: prisma/schema.prisma, prisma/migrations/20260921050000_provider_neutral_columns/migration.sql
+
 ## Deliberately excluded
 (none yet)

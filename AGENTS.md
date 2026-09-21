@@ -1,7 +1,7 @@
-# AGENTS.md: Payment Slice (Subscription + Flutterwave, test mode)
+# AGENTS.md: Payment Slice (Subscription + Paystack, test mode)
 
 ## What this repository is
-A graded "slice": one working subscription and payment flow using Flutterwave in TEST MODE, built properly, with nothing around it. A reviewer reads the code and DOCUMENTATION.md, then asks the owner to defend decisions line by line. Optimise for correctness and explainability, not cleverness or feature count. The owner is new to engineering: explain reasoning in plain language in every plan.
+A graded "slice": one working subscription and payment flow using Paystack in TEST MODE, built properly, with nothing around it. A reviewer reads the code and DOCUMENTATION.md, then asks the owner to defend decisions line by line. Optimise for correctness and explainability, not cleverness or feature count. The owner is new to engineering: explain reasoning in plain language in every plan.
 
 This is a completely separate project from auth-slice. It reuses auth-slice's session/authentication mechanism to identify the signed-in user. That reuse is permitted by the assessment brief and must be documented as such (DECISIONS.md and DOCUMENTATION.md).
 
@@ -14,7 +14,7 @@ The dashboard/shell is minimal and reused from auth-slice's pattern.
 - Every amount column has a currency column stored alongside it. An amount without its currency is invalid.
 
 ## Payment integrity rules
-- Entitlement (granting a plan) is only ever granted after INDEPENDENT server-side verification of the transaction with Flutterwave (a server-to-server call using our secret key). Never on the strength of a redirect/return URL, query string, or client-supplied status alone.
+- Entitlement (granting a plan) is only ever granted after INDEPENDENT server-side verification of the transaction with Paystack (a server-to-server call using our secret key). Never on the strength of a redirect/return URL, query string, or client-supplied status alone.
 - payment_log is append-only at the application level: rows are only ever INSERTED, never updated or deleted. Corrections are new rows.
 - Webhook idempotency is mandatory: every webhook handler must check whether the event's provider reference has already been processed before acting on it. A replayed webhook must never grant twice or log twice as new work.
 

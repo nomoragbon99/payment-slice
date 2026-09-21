@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Payment Slice",
-  description: "Subscription and payment slice assessment (Flutterwave, test mode)",
+  description: "Subscription and payment slice assessment (Paystack, test mode)",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
