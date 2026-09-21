@@ -19,8 +19,13 @@ export type PaymentLogEntry = {
   rawResponse?: Prisma.InputJsonValue;
 };
 
-export async function appendPaymentLog(entry: PaymentLogEntry): Promise<void> {
-  await db.paymentLog.create({
+// `client` defaults to the shared client; a caller already inside db.$transaction(...) passes its
+// transaction client so the log row commits or rolls back together with the caller's other writes.
+export async function appendPaymentLog(
+  entry: PaymentLogEntry,
+  client: Pick<Prisma.TransactionClient, "paymentLog"> = db,
+): Promise<void> {
+  await client.paymentLog.create({
     data: {
       userId: entry.userId,
       provider: entry.provider,
