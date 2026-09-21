@@ -3,8 +3,8 @@
 ## Decisions
 
 ### Repository layout
-- Decision: whether payments-slice is its own repository or a folder inside the parent repo at C:\Users\HP\Documents\build-assessments.
-- Chosen: standalone repository at payments-slice/, initialised with its own .git, default branch main.
+- Decision: whether payment-slice is its own repository or a folder inside the parent repo at C:\Users\HP\Documents\build-assessments.
+- Chosen: standalone repository at payment-slice/, initialised with its own .git, default branch main.
 - Rejected and why: committing into the parent repo — rejected because the assessment should be reviewable on its own, same as auth-slice. The parent repo is left untouched.
 - Files: .git/, .gitignore
 
