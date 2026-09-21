@@ -8,6 +8,15 @@ export const checkoutConfig = {
   // later fail, so a failing Paystack cannot be hammered.
   rateLimit: { windowSeconds: 10 * MINUTE, max: 5 },
 
+  // The /checkout/return page. Only a call to Paystack is rate limited; reading our own database is
+  // not, and neither is a payment we already know is fulfilled. Per signed-in user.
+  returnPage: {
+    rateLimit: { windowSeconds: 10 * MINUTE, max: 12 },
+    // While a payment is confirmed-but-not-yet-activated, the page re-checks by itself this often,
+    // at most this many times, then tells the person to check again later. 6 x 5 s = 30 s.
+    autoRefresh: { intervalMs: 5_000, maxRefreshes: 6 },
+  },
+
   paystack: {
     baseUrl: "https://api.paystack.co",
     // Give up waiting for Paystack after this long. The customer is never given a payment URL in

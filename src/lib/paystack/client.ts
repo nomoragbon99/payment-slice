@@ -51,6 +51,98 @@ function isPaystackHttpsUrl(value: string): boolean {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// GET /transaction/verify/{reference}
+//
+// Shape confirmed with real test-mode calls (the public spec omits most of it):
+//   * A transaction that exists answers HTTP 200 { status: true, message: "Verification successful",
+//     data: { id (number), status, reference, amount (integer kobo), currency, ... } } EVEN WHEN THE
+//     CUSTOMER NEVER PAID (data.status is then "abandoned"). The outer `status: true` only means "the
+//     API call worked"; whether the PAYMENT worked is data.status === "success", and nothing else.
+//   * An unknown reference answers HTTP 400 (not 404) with { status: false, code:
+//     "transaction_not_found", ... }. That machine code is what we match, not the English message.
+// ---------------------------------------------------------------------------------------------
+
+export type VerifiedTransaction = {
+  // Paystack's own status: "success", "failed", "abandoned", "reversed" per the spec, possibly others.
+  // Kept as the raw string; callers decide what an unrecognised value means.
+  status: string;
+  reference: string;
+  amountKobo: number;
+  currency: string;
+  providerTransactionId: string;
+};
+
+export type VerifyFailure =
+  | { ok: false; kind: "network_error"; message: string }
+  | { ok: false; kind: "not_found"; httpStatus: number; body: unknown }
+  | { ok: false; kind: "http_error"; httpStatus: number; body: unknown }
+  | { ok: false; kind: "bad_response"; httpStatus: number; reason: string; body: unknown };
+
+export type VerifyResult = { ok: true; transaction: VerifiedTransaction } | VerifyFailure;
+
+const verifyBodySchema = z.object({
+  status: z.literal(true),
+  data: z.object({
+    id: z.number().int(),
+    status: z.string(),
+    reference: z.string(),
+    amount: z.number().int(),
+    currency: z.string(),
+  }),
+});
+
+const notFoundBodySchema = z.object({ code: z.literal("transaction_not_found") });
+
+// Never throws: every outcome is a value the caller can act on. The reference is percent-encoded
+// into the path (callers should already have validated its format).
+export async function verifyTransaction(
+  reference: string,
+  secretKey: string,
+  deps: Deps = {},
+): Promise<VerifyResult> {
+  const doFetch = deps.fetch ?? fetch;
+
+  let response: Response;
+  let text: string;
+  try {
+    response = await doFetch(`${checkoutConfig.paystack.baseUrl}/transaction/verify/${encodeURIComponent(reference)}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${secretKey}` },
+      signal: AbortSignal.timeout(checkoutConfig.paystack.timeoutMs),
+    });
+    text = await response.text();
+  } catch (error) {
+    return { ok: false, kind: "network_error", message: error instanceof Error ? error.message : String(error) };
+  }
+
+  const body = boundedBody(text);
+
+  if (!response.ok) {
+    if (response.status === 400 && notFoundBodySchema.safeParse(body).success) {
+      return { ok: false, kind: "not_found", httpStatus: response.status, body };
+    }
+    return { ok: false, kind: "http_error", httpStatus: response.status, body };
+  }
+
+  const parsed = verifyBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return { ok: false, kind: "bad_response", httpStatus: response.status, reason: "unexpected response shape", body };
+  }
+
+  const { data } = parsed.data;
+  return {
+    ok: true,
+    transaction: {
+      status: data.status,
+      reference: data.reference,
+      amountKobo: data.amount,
+      currency: data.currency,
+      providerTransactionId: String(data.id),
+    },
+  };
+}
+
 // POST /transaction/initialize. Never throws: every outcome is a value the caller can log.
 export async function initializeTransaction(
   input: InitializeInput,
