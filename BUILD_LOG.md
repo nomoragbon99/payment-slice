@@ -92,3 +92,10 @@ Append-only. Every error, surprise or wrong assumption during the build. Raw mat
 - Cause: unknown; not proven to be a problem with our request.
 - Fix: none. The owner should open the URL in a browser during the manual test to confirm the payment page loads. I do not claim it does.
 - Commit: 7cacc43
+
+### Fixed-window rate limit let 6 checkout requests through in the owner's manual test (2026-09-21 13:15)
+- Symptom: the owner's browser test showed 6 successful POST /api/checkout responses before the first 429; the limit is 5 per 10 minutes.
+- Investigation: read rate_limit_buckets and payment_log (read-only). alice had two counter rows: window 12:50:00-13:00:00 count 1, and window 13:00:00-13:10:00 count 6. payment_log held her six initiated rows at 12:57:18.194 and 13:03:07.488, :09.136, :10.498, :11.985, :13.649. So one attempt landed in the old window and five in the new one; the sixth attempt of the new window made the counter 6 and was rejected (the counter counts rejected attempts too). Ruled out: her earlier testing counting towards the new window (it would have reduced her allowance, not raised it); a restart resetting anything (the counters live in the database); an off-by-one in the check (allowed means count <= 5, the sixth was blocked). The two rows from 08:42 were my own earlier real Paystack calls, in a much older window, and are irrelevant. Not checked: nothing further needed; the numbers fully explain the result.
+- Cause: my design choice of a fixed window, not a coding error. Fixed windows reset on clock boundaries, so an attempt just before a boundary is forgotten a moment later. I had written this down as a known limit (up to 2x at a boundary) but judged it minor, and my own concurrency and API checks all ran inside a single window, so they could not show it.
+- Fix: decided to replace it with an exact sliding window (see DECISIONS.md, "Rate limiting: exact sliding window replaces the fixed window"). Implementation, migration and tests follow in later commits; this entry gets a follow-up when they are verified.
+- Commit: 7cacc43 (where the behaviour was introduced); the fix will be a later commit
