@@ -220,23 +220,25 @@ model WebhookEvent {
   @@map("webhook_events")
 }
 
-// ───────── rate_limit_buckets: fixed-window counters for rate limiting ─────────
-// Used by the checkout-initiation endpoint (sign-in deliberately has no rate limiting). One row
-// per (key, window): the first hit in a window inserts it with count 1, later hits increment it
-// in a single atomic statement (INSERT ... ON CONFLICT DO UPDATE), so two simultaneous requests
-// cannot both read the same count and both slip under the limit.
-model RateLimitBucket {
+
+// ───────── rate_limit_attempts: sliding-window rate limiting ─────────
+// One row per ALLOWED attempt (denied attempts are never stored). An attempt is allowed only if
+// fewer than `max` rows for its key are newer than the window, so per key this table never holds
+// more than `max` rows. The check-then-insert is serialised per key with an advisory lock
+// (pg_advisory_xact_lock) inside one transaction; see src/lib/security/rate-limit.ts.
+// Replaces the fixed-window rate_limit_buckets table (see DECISIONS.md).
+model RateLimitAttempt {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
   // What is being limited, e.g. "checkout:user:<user id>".
   key String
 
-  // Start of this fixed counting window. Part of the key: a new window is a new row.
-  windowStart DateTime @map("window_start") @db.Timestamptz
+  // When the attempt happened, by the DATABASE clock. clock_timestamp(), not now(): now() is the
+  // time the transaction started, so a request that waited for the lock would be stamped earlier
+  // than an attempt that committed before it.
+  at DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz
 
-  // Attempts seen in this window. CHECK count > 0: a row exists only because an attempt happened.
-  count Int
-
-  // Composite PK: "increment this window's counter" is one upsert keyed on the exact pair,
-  // so two counters for the same key and window can never exist.
-  @@id([key, windowStart])
-  @@map("rate_limit_buckets")
+  // "This key's attempts in the last N minutes" is the only query, always by key and time.
+  @@index([key, at])
+  @@map("rate_limit_attempts")
 }

@@ -1,4 +1,3 @@
-import { checkoutConfig } from "@/config/checkout";
 import { db } from "@/lib/db";
 import { errorResponse } from "@/lib/http";
 
@@ -10,60 +9,77 @@ export type ConsumeResult = {
   retryAfterSeconds: number;
 };
 
-// Fixed window, not sliding: each key gets one row per windowSeconds-wide bucket. Chosen over a
-// sliding window because it needs one row and one atomic statement per key. Trade-off (recorded
-// in DECISIONS.md): a client can burst up to 2x max requests across a window boundary (max at the
-// end of one window, max again at the start of the next).
+// Exact sliding window: an attempt is allowed only if fewer than `max` ALLOWED attempts for this key
+// happened in the last `windowSeconds` (see DECISIONS.md for why this replaced the fixed window).
+//
+// Counting rows and then inserting is not atomic on its own: two simultaneous requests could both
+// count 4 and both insert, letting 6 through. So each attempt runs in one short transaction that
+// first takes a per-key advisory lock. pg_advisory_xact_lock(n) is a named mutex held by the
+// database: any other transaction asking for the same number waits until this one commits or rolls
+// back, and the lock is then released automatically. Attempts for ONE key therefore run strictly one
+// after another and each sees every earlier committed attempt when it counts. Different keys hash to
+// different numbers and never wait for each other (a hash collision would only cause needless
+// waiting, never a wrong count). The lock lives in the database, so it also works across processes.
+//
+// Only allowed attempts are stored. A denied attempt writes nothing, so hammering a blocked endpoint
+// neither grows the table nor pushes the end of the block later: the block ends exactly when the
+// oldest counted attempt turns `windowSeconds` old.
+//
+// Every time comparison uses the database clock (clock_timestamp()), never the app server's clock.
+//
+// Fails closed: if the database errors, this throws and the request is not allowed through.
 export async function consume(key: string, limit: RateLimit): Promise<ConsumeResult> {
-  const windowMs = limit.windowSeconds * 1000;
-  const windowStart = new Date(Math.floor(Date.now() / windowMs) * windowMs);
+  const windowSeconds = limit.windowSeconds;
 
-  // One atomic parameterised statement: INSERT the first hit in this window, or increment the
-  // existing row's count, and return the resulting count -- no read-then-write race between
-  // concurrent requests for the same key.
-  const rows = await db.$queryRaw<{ count: number }[]>`
-    INSERT INTO rate_limit_buckets (key, window_start, count)
-    VALUES (${key}, ${windowStart}, 1)
-    ON CONFLICT (key, window_start)
-    DO UPDATE SET count = rate_limit_buckets.count + 1
-    RETURNING count
-  `;
-  const count = rows[0].count;
+  return db.$transaction(
+    async (tx) => {
+      // 1. Wait for our turn on this key. Selecting from a subquery makes Prisma read a normal int
+      //    back (pg_advisory_xact_lock itself returns void, which Prisma cannot deserialize).
+      await tx.$queryRaw`
+        SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))) AS l
+      `;
 
-  void cleanupOldBucketsOncePerInterval();
+      // 2. Housekeeping: forget this key's attempts that are already outside the window. Nothing
+      //    ever looks further back than the window, so this keeps the table tiny without a sweep job.
+      await tx.$executeRaw`
+        DELETE FROM rate_limit_attempts
+        WHERE key = ${key}
+          AND at <= clock_timestamp() - (${windowSeconds}::double precision * interval '1 second')
+      `;
 
-  const allowed = count <= limit.max;
-  const remaining = Math.max(0, limit.max - count);
-  const retryAfterSeconds = allowed
-    ? 0
-    : Math.ceil((windowStart.getTime() + windowMs - Date.now()) / 1000);
+      // 3. How many attempts are inside the window, and when does the oldest one leave it?
+      const rows = await tx.$queryRaw<{ count: number; retry_after: number | null }[]>`
+        SELECT
+          count(*)::int AS count,
+          extract(epoch FROM (
+            min(at) + (${windowSeconds}::double precision * interval '1 second') - clock_timestamp()
+          ))::float8 AS retry_after
+        FROM rate_limit_attempts
+        WHERE key = ${key}
+          AND at > clock_timestamp() - (${windowSeconds}::double precision * interval '1 second')
+      `;
+      const { count, retry_after } = rows[0];
 
-  return { allowed, remaining, retryAfterSeconds };
+      // 4a. Room left: record this attempt (the column default stamps it with clock_timestamp()).
+      if (count < limit.max) {
+        await tx.$executeRaw`INSERT INTO rate_limit_attempts (key) VALUES (${key})`;
+        return { allowed: true, remaining: limit.max - count - 1, retryAfterSeconds: 0 };
+      }
+
+      // 4b. Full: store nothing. The block lifts when the oldest counted attempt ages out.
+      return {
+        allowed: false,
+        remaining: 0,
+        retryAfterSeconds: Math.max(1, Math.ceil(retry_after ?? windowSeconds)),
+      };
+    },
+    // If something stalls while holding the lock, waiting requests give up (and fail closed) after 5 s.
+    { maxWait: 5000, timeout: 5000 },
+  );
 }
 
 export function rateLimitResponse(retryAfterSeconds: number) {
   const response = errorResponse(429, "RATE_LIMITED", "Too many requests. Please try again later.");
   response.headers.set("Retry-After", String(retryAfterSeconds));
   return response;
-}
-
-let lastCleanupAt = 0;
-
-// Opportunistic cleanup, at most once per interval per process: piggybacks on a normal request
-// instead of needing a scheduled job at this slice's scale. Called fire-and-forget, so it must catch
-// its own errors: a failed sweep is not worth failing (or slowing) the request that triggered it.
-async function cleanupOldBucketsOncePerInterval(): Promise<void> {
-  const now = Date.now();
-  if (now - lastCleanupAt < checkoutConfig.rateLimitCleanup.intervalSeconds * 1000) return;
-  lastCleanupAt = now;
-
-  try {
-    await db.rateLimitBucket.deleteMany({
-      where: {
-        windowStart: { lt: new Date(now - checkoutConfig.rateLimitCleanup.bucketRetentionSeconds * 1000) },
-      },
-    });
-  } catch (error) {
-    console.error("rate-limit bucket cleanup failed:", error);
-  }
 }

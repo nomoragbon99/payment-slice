@@ -1,19 +1,12 @@
 // Every tunable value for checkout initiation. Handlers import from here; no magic numbers elsewhere.
 
 const MINUTE = 60;
-const HOUR = 60 * MINUTE;
 
 export const checkoutConfig = {
-  // Per signed-in user: how many times they may start a checkout in one window. Every attempt
-  // counts, including ones that later fail, so a failing Paystack cannot be hammered.
+  // Per signed-in user: at most `max` checkouts may be started in ANY `windowSeconds`-long stretch
+  // (an exact sliding window). Every attempt that gets past the check counts, including ones that
+  // later fail, so a failing Paystack cannot be hammered.
   rateLimit: { windowSeconds: 10 * MINUTE, max: 5 },
-
-  rateLimitCleanup: {
-    // How often (at most) the opportunistic sweep of old rate_limit_buckets rows runs, per process.
-    intervalSeconds: 5 * MINUTE,
-    // How long a bucket row is kept before that sweep deletes it.
-    bucketRetentionSeconds: 24 * HOUR,
-  },
 
   paystack: {
     baseUrl: "https://api.paystack.co",
