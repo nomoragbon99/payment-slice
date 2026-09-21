@@ -7,16 +7,16 @@
 // the row counts before and after. It refuses to run against a non-local database.
 //
 // Run with: npm run check:fulfilment
-import { spawnSync } from "child_process";
+// (the temporary-schema harness itself lives in scripts/lib/isolated-schema.ts)
 import { randomUUID } from "crypto";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { inspect } from "util";
-import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "../src/generated/prisma/client";
 import { fulfilTransaction, type FulfilResult, type FulfilSource, type WebhookEventInput } from "../src/lib/checkout/fulfil";
 import { appendPaymentLog } from "../src/lib/payment-log";
 import { transactionEvidenceSchema } from "../src/lib/paystack/evidence";
+import { createIsolatedSchema, type Isolated } from "./lib/isolated-schema";
 
 // The code under test logs warnings and errors: capture them so we can prove they never contain secrets
 // or card details, instead of printing hundreds of lines.
@@ -25,16 +25,10 @@ const capture = (...args: unknown[]) => { logged.push(args.map((a) => (typeof a 
 console.error = capture;
 console.warn = capture;
 
-const url = process.env.DATABASE_URL;
-if (!url || !["localhost", "127.0.0.1"].includes(new URL(url).hostname)) {
-  process.stderr.write("Refusing to run: DATABASE_URL must point at a local database.\n");
-  process.exit(1);
-}
-const schema = `check_fulfilment_${Date.now().toString(36)}`;
-if (!/^check_fulfilment_[a-z0-9]+$/.test(schema)) throw new Error("unsafe schema name");
-
-const admin = new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
+let iso: Isolated | undefined;
 let db!: PrismaClient;
+let admin!: PrismaClient;
+let schema = "";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -105,7 +99,7 @@ const eventsFor = (txRef: string) => db.webhookEvent.findMany({ where: { txRef }
 const subFor = (userId: string) => db.subscription.findUnique({ where: { userId } });
 const countLog = (where: Prisma.PaymentLogWhereInput) => db.paymentLog.count({ where });
 async function sqlBool(query: Prisma.Sql): Promise<boolean> { return (await db.$queryRaw<{ ok: boolean }[]>(query))[0].ok; }
-async function iso(query: Prisma.Sql): Promise<string> { return (await db.$queryRaw<{ v: string }[]>(query))[0].v; }
+async function textOf(query: Prisma.Sql): Promise<string> { return (await db.$queryRaw<{ v: string }[]>(query))[0].v; }
 
 // Wraps the client so every transaction can be tampered with, to simulate failures and to switch protections off.
 type TxTamper = { failOn?: (sql: string) => boolean; skipLock?: boolean; recheckAlwaysZero?: boolean; failWebhookUpsert?: boolean; fulfilledInserts?: { n: number } };
@@ -162,35 +156,16 @@ function tampered(client: PrismaClient, t: TxTamper): PrismaClient {
 
 // ---------- the tests ----------
 async function main() {
-  const publicBefore = { log: await admin.paymentLog.count(), subs: await admin.subscription.count(), events: await admin.webhookEvent.count() };
-
-  // Build the temporary schema with the REAL migrations.
-  await admin.$executeRawUnsafe(`CREATE SCHEMA "${schema}"`);
-  const testUrl = new URL(url!);
-  testUrl.searchParams.set("schema", schema);
-  const deploy = spawnSync("npx", ["prisma", "migrate", "deploy"], { shell: true, encoding: "utf8", env: { ...process.env, DATABASE_URL: testUrl.toString() } });
-  if (deploy.status !== 0) throw new Error(`could not migrate the temporary schema:\n${deploy.stdout}\n${deploy.stderr}`);
-  // TWO settings are needed and BOTH matter: the adapter's `schema` makes Prisma's model queries use the
-  // temporary schema, while `search_path` makes RAW SQL (the subscription upsert, the advisory lock, this
-  // script's own queries) resolve unqualified table names there too. With only the first, raw SQL would
-  // silently hit the real public tables.
-  const clientUrl = new URL(url!);
-  clientUrl.searchParams.set("options", `-c search_path=${schema}`);
-  db = new PrismaClient({ adapter: new PrismaPg({ connectionString: clientUrl.toString() }, { schema }) });
+  iso = await createIsolatedSchema("check_fulfilment");
+  db = iso.db;
+  admin = iso.admin;
+  schema = iso.schema;
+  const publicBefore = await iso.realCounts();
 
   console.log("== harness: a real, isolated copy of the database structure ==");
-  // FATAL guard: if anything can reach the real tables, stop before a single test runs.
-  const resolvesTo = async (query: string) => (await db.$queryRawUnsafe<{ s: string }[]>(query))[0].s;
-  const currentSchema = await resolvesTo("SELECT current_schema() AS s");
-  const rawSubscriptions = await resolvesTo("SELECT n.nspname AS s FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = to_regclass('subscriptions')");
-  const rawPaymentLog = await resolvesTo("SELECT n.nspname AS s FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = to_regclass('payment_log')");
-  if (currentSchema !== schema || rawSubscriptions !== schema || rawPaymentLog !== schema) {
-    throw new Error(`SAFETY STOP: the test client can reach the wrong schema (current=${currentSchema}, raw subscriptions=${rawSubscriptions}, raw payment_log=${rawPaymentLog}). No test was run.`);
-  }
-  check("raw SQL resolves to the temporary schema, not public (current_schema, subscriptions, payment_log)", true, `${currentSchema} / ${rawSubscriptions} / ${rawPaymentLog}`);
-  const modelUsers = await db.user.count();
-  const publicUsers = (await admin.$queryRawUnsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM public.users`))[0].n;
-  check("Prisma's model queries hit the temporary schema too (its user table is empty; public has real users)", modelUsers === 0 && publicUsers > 0, `temporary=${modelUsers}, public=${publicUsers}`);
+  // (createIsolatedSchema has already stopped everything unless raw SQL and model queries both resolve to the temporary schema.)
+  check("raw SQL resolves to the temporary schema, not public (current_schema, subscriptions, payment_log)", true, `${iso.proof.currentSchema} / ${iso.proof.rawSubscriptions} / ${iso.proof.rawPaymentLog}`);
+  check("Prisma's model queries hit the temporary schema too (its user table is empty; public has real users)", iso.proof.temporaryUsers === 0 && iso.proof.realUsers > 0, `temporary=${iso.proof.temporaryUsers}, public=${iso.proof.realUsers}`);
   const trig = await admin.$queryRawUnsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace ns ON ns.oid = c.relnamespace WHERE ns.nspname = '${schema}' AND c.relname = 'payment_log' AND t.tgname = 'payment_log_append_only'`);
   check("the real append-only trigger exists in it", trig[0].n === 1);
   const idx = await admin.$queryRawUnsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM pg_indexes WHERE schemaname = '${schema}' AND indexname IN ('payment_log_one_fulfilment_per_tx_ref','payment_log_one_fulfilment_per_provider_id')`);
@@ -222,10 +197,10 @@ async function main() {
   {
     const u1 = await makeUser("m1"); const o1 = await makeOrder(u1);
     await fulfil(o1, { fetchFn: fakePaystack(paystackReply(o1)).fetchFn, now: new Date("2026-01-31T12:00:00Z") });
-    check("31 January + 1 month = 28 February (Postgres clamps month ends)", (await iso(Prisma.sql`SELECT to_char(current_period_end AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI') AS v FROM subscriptions WHERE user_id = ${u1.id}::uuid`)) === "2026-02-28T12:00");
+    check("31 January + 1 month = 28 February (Postgres clamps month ends)", (await textOf(Prisma.sql`SELECT to_char(current_period_end AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI') AS v FROM subscriptions WHERE user_id = ${u1.id}::uuid`)) === "2026-02-28T12:00");
     const u2 = await makeUser("m2"); const o2 = await makeOrder(u2, { interval: "yearly" });
     await fulfil(o2, { fetchFn: fakePaystack(paystackReply(o2)).fetchFn, now: new Date("2028-02-29T00:00:00Z") });
-    check("29 Feb 2028 + 1 year = 28 Feb 2029", (await iso(Prisma.sql`SELECT to_char(current_period_end AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS v FROM subscriptions WHERE user_id = ${u2.id}::uuid`)) === "2029-02-28");
+    check("29 Feb 2028 + 1 year = 28 Feb 2029", (await textOf(Prisma.sql`SELECT to_char(current_period_end AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS v FROM subscriptions WHERE user_id = ${u2.id}::uuid`)) === "2029-02-28");
   }
 
   console.log("\n== calling it again: nothing more happens ==");
@@ -474,13 +449,12 @@ async function main() {
   check("no log entry contains a Paystack response body", !logged.some((l) => l.includes("Verification successful") || l.includes("gateway_response")));
 
   console.log("\n== the harness cleaned up after itself ==");
-  await db.$disconnect();
-  await admin.$executeRawUnsafe(`DROP SCHEMA "${schema}" CASCADE`);
+  await iso.drop();
   const gone = await admin.$queryRawUnsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM pg_namespace WHERE nspname = '${schema}'`);
   check("the temporary schema is dropped", gone[0].n === 0);
-  const publicAfter = { log: await admin.paymentLog.count(), subs: await admin.subscription.count(), events: await admin.webhookEvent.count() };
+  const publicAfter = await iso.realCounts();
   check("your real tables are exactly as they were (payment_log, subscriptions, webhook_events)", JSON.stringify(publicBefore) === JSON.stringify(publicAfter), `${JSON.stringify(publicBefore)} -> ${JSON.stringify(publicAfter)}`);
-  await admin.$disconnect();
+  await iso.close();
 
   console.log(failures ? `\n${failures} FAILED` : "\nall passed");
   process.exit(failures ? 1 : 0);
@@ -488,7 +462,6 @@ async function main() {
 
 main().catch(async (error) => {
   process.stderr.write(inspect(error) + "\n");
-  try { await db?.$disconnect(); } catch { /* ignore */ }
-  try { await admin.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); await admin.$disconnect(); } catch { /* ignore */ }
+  try { await iso?.drop(); await iso?.close(); } catch { /* ignore */ }
   process.exit(1);
 });

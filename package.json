@@ -17,6 +17,7 @@
     "check:checkout-return": "tsx --env-file=.env scripts/check-checkout-return.ts",
     "check:paystack": "tsx scripts/check-paystack.ts",
     "check:fulfilment": "tsx --env-file=.env scripts/check-fulfilment.ts",
+    "check:webhook": "tsx --env-file=.env scripts/check-webhook.ts",
     "// db:studio": "Fixed port 5557: 5555 is auth-slice and 5556 is used by another local project, so a shared port would cross-serve data",
     "db:studio": "prisma studio --port 5557",
     "typecheck": "tsc --noEmit"
