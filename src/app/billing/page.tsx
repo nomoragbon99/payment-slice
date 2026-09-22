@@ -6,6 +6,7 @@ import { getCurrentUser } from "@/lib/auth/session";
 import { getPlanView, type PlanView } from "@/lib/billing/subscription";
 import { formatDate } from "@/lib/format-date";
 import { CancelPlan } from "./CancelPlan";
+import { ResumePlan } from "./ResumePlan";
 
 export const metadata: Metadata = { title: "Billing" };
 
@@ -55,7 +56,10 @@ function ProDetails({ view }: { view: Extract<PlanView, { kind: "pro" }> }) {
         <Row label={view.endsAtPeriodEnd ? "Ends on" : "Active until"} value={formatDate(view.activeUntil)} />
       </dl>
       {view.endsAtPeriodEnd ? (
-        <p className="text-sm text-[var(--slate)]">Your plan will end on {formatDate(view.activeUntil)}.</p>
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-[var(--slate)]">Your plan will end on {formatDate(view.activeUntil)} and won&apos;t renew.</p>
+          <ResumePlan />
+        </div>
       ) : (
         <CancelPlan />
       )}

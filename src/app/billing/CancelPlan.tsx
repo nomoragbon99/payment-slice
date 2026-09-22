@@ -4,7 +4,8 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 // The Cancel control: a button, a confirmation step and an optional reason, wired to POST /api/subscription/cancel.
-// The cancellation itself is not built yet (that endpoint answers 501), so for now the person is told so.
+// On success the page re-fetches (router.refresh()) rather than showing a static message, so the new "will end on"
+// state (and the Resume control) comes from the same server-rendered source of truth as every other visit.
 export function CancelPlan() {
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
@@ -22,12 +23,16 @@ export function CancelPlan() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(trimmed ? { reason: trimmed } : {}),
       });
-      const body = await response.json().catch(() => null);
       if (response.status === 401) {
         router.push("/sign-in?next=%2Fbilling");
         return;
       }
-      setMessage(response.status === 501 ? "Cancelling a plan isn't available yet." : (body?.error?.message ?? "Something went wrong. Please try again."));
+      if (response.ok) {
+        router.refresh();
+        return;
+      }
+      const body = await response.json().catch(() => null);
+      setMessage(body?.error?.message ?? "Something went wrong. Please try again.");
     } catch {
       setMessage("Couldn't reach the server. Check your connection and try again.");
     }
