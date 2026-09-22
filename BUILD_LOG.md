@@ -196,3 +196,17 @@ Append-only. Every error, surprise or wrong assumption during the build. Raw mat
 - Cause: my own choice of the wrong navigation call for an internal route.
 - Fix: the internal sign-in redirects use useRouter().push; the external Paystack redirect assigns window.location.href (a deliberate full-page navigation, commented as such). Lint is clean. A second lint error in the new test script (`let` never reassigned) was fixed at once.
 - Commit: 8a59c05
+
+### A remote @import broke the dev server, and the referenced SKILL.md path did not exist here (2026-09-22 01:10)
+- Symptom 1: the task named /mnt/skills/public/frontend-design/SKILL.md; that path does not exist on this Windows machine (checked via both Bash and PowerShell, and it is not among this session's listed skills). Symptom 2: after adding a Google Fonts @import to globals.css, every page returned HTTP 500 with "Parsing CSS source code failed ... @import rules must precede all rules aside from @charset and @layer statements".
+- Investigation: (1) asked the owner how to proceed rather than guessing at a missing file's contents; proceeded on general design judgment per their answer. (2) Read the dev server's own log, which named the exact line and reason: Tailwind's `@import "tailwindcss"` expands inline during the PostCSS pass, which pushed my font @import after generated rules, and CSS requires all @import statements to come first.
+- Cause: (1) environment mismatch, not a bug of mine to fix. (2) my own CSS ordering mistake, compounded by pulling in a remote font at all, which is also a build-time network dependency this project should not need.
+- Fix: removed the Google Fonts @import entirely; the font-family stack now lists "Inter" first with system-ui/-apple-system/Segoe UI fallbacks, so pages render with Inter wherever the OS already has it and fall back cleanly otherwise, with zero external requests.
+- Commit: 411733c
+
+### My own test's text-extraction had a leading-space bug (2026-09-22 01:20)
+- Symptom: after restructuring /plans, 6 of check-billing.ts's assertions failed, including "/plans: 200; Free is the ONE current plan ...".
+- Investigation: printed the raw match and its extracted text for the aria-current section; the text began with a single leading space (" Free Free Current plan"), because the shared text() helper replaces the section's opening tag with a literal space and never trims. `.startsWith("Free")` therefore failed on well-formed output.
+- Cause: my own test helper, not the page.
+- Fix: `.trim()` the extracted row text before comparing. Re-ran: all 65 checks pass.
+- Commit: 411733c

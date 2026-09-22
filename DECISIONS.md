@@ -294,6 +294,13 @@
 - Rejected and why: a button for the other paid option that always fails with 409 (a broken control); wording it "Renews" (false); a Cancel button that does nothing or calls a route that does not exist (a placeholder with a defined contract is honest and gives the next task a fixed shape); extra styling, a settings page or an upgrade flow (the brief says no dashboard features and that the thing being sold is a plan flag).
 - Files: src/lib/billing/subscription.ts, src/lib/billing/checkout-client.ts, src/lib/format-date.ts, src/app/plans/*, src/app/billing/*, src/app/api/subscription/cancel/route.ts, src/proxy.ts, src/app/dashboard/page.tsx, src/app/checkout/return/page.tsx
 
+### Visual design pass: token system and layout restructure
+- Decision: how to give /plans, /billing, /dashboard and /sign-in a considered visual treatment without over-designing a test-mode assessment slice.
+- Chosen: a 6-token palette in globals.css (--ink #14171A, --slate #5B6470, --paper #FFFFFF, --mist #F4F5F7, --line #E2E4E8, --signal #2451CC: one accent color, no secondary success/warning hue), Inter as the single typeface with a system-font fallback (no remote font request: see the build error below), and tabular-nums on money and dates. /plans is a single bordered list (one row per plan, hairline dividers) instead of three separate cards, matching a pricing-table reading rather than marketing tiles; the current plan gets a left accent bar and a small text label, not a pill/badge. /billing is a label-value block in the same bordered-container language, for visual consistency between the two pages. Sign-in and dashboard were brought onto the same tokens without restructuring them.
+- Explicitly avoided per the owner's brief: no warm-cream/terracotta palette, no identical shadowed cards, no uppercase tracked-out labels, no arrow glyphs on buttons, no numbered markers.
+- Scope held to styling: no new screens, fields or behaviour. Two copy trims were a direct consequence of the layout change and are called out separately rather than folded in silently: the checkout button no longer repeats the full plan name ("Choose Pro (monthly)" -> "Choose monthly") because the row heading already shows it, and the unavailable-until note was shortened ("Available when your current plan ends on <date>" -> "Available <date>") for the same reason.
+- Files: src/app/globals.css, src/app/(auth)/sign-in/SignInForm.tsx, src/app/dashboard/{page,SignOutButton}.tsx, src/app/plans/{page,CheckoutButton}.tsx, src/app/billing/{page,CancelPlan}.tsx, scripts/check-billing.ts
+
 ## Deliberately excluded
 - Sign-up flow: not in the brief; test users are seeded instead.
 - Email verification: not needed to identify a signed-in user in this slice.
