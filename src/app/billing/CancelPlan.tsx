@@ -36,35 +36,49 @@ export function CancelPlan() {
 
   if (!confirming) {
     return (
-      <button type="button" onClick={() => setConfirming(true)} className="rounded border border-gray-300 px-3 py-2 text-gray-900">
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        className="rounded-md border border-[var(--line)] px-4 py-2 text-sm text-[var(--ink)] transition-colors hover:bg-[var(--mist)]"
+      >
         Cancel plan
       </button>
     );
   }
 
   return (
-    <div className="flex flex-col gap-2">
-      <p className="text-sm">Are you sure you want to cancel your plan?</p>
-      <label className="flex flex-col gap-1 text-sm">
+    <div className="flex flex-col gap-3 rounded-lg border border-[var(--line)] p-4">
+      <p className="text-sm text-[var(--ink)]">Are you sure you want to cancel your plan?</p>
+      <label className="flex flex-col gap-1.5 text-sm text-[var(--slate)]">
         Reason (optional)
         <textarea
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           maxLength={500}
           rows={3}
-          className="w-full rounded border border-gray-300 px-3 py-2 text-gray-900"
+          className="w-full rounded-md border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-[15px] text-[var(--ink)] outline-none focus:border-[var(--signal)] focus:ring-1 focus:ring-[var(--signal)]"
         />
       </label>
       <div className="flex gap-2">
-        <button type="button" onClick={onConfirm} disabled={pending} className="rounded bg-red-700 px-3 py-2 text-white disabled:opacity-60">
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={pending}
+          className="rounded-md bg-[var(--ink)] px-3.5 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
           {pending ? "Cancelling..." : "Yes, cancel my plan"}
         </button>
-        <button type="button" onClick={() => setConfirming(false)} disabled={pending} className="rounded border border-gray-300 px-3 py-2 text-gray-900">
+        <button
+          type="button"
+          onClick={() => setConfirming(false)}
+          disabled={pending}
+          className="rounded-md border border-[var(--line)] px-3.5 py-2 text-sm text-[var(--ink)] transition-colors hover:bg-[var(--mist)] disabled:opacity-50"
+        >
           Keep my plan
         </button>
       </div>
       {message && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="text-sm text-[var(--slate)]">
           {message}
         </p>
       )}

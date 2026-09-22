@@ -83,6 +83,12 @@ async function main() {
     return end;
   };
   const count = (s: string, needle: string) => s.split(needle).length - 1;
+  // The text of whichever <section> is marked aria-current="true" (there must be exactly one), so we can
+  // confirm the CORRECT plan is marked current, not just that some row is.
+  const currentRowText = (html: string) => {
+    const m = html.match(/<section aria-current="true"[\s\S]*?<\/section>/);
+    return m ? text(m[0]).trim() : "";
+  };
 
   try {
     console.log("-- signed out");
@@ -96,7 +102,7 @@ async function main() {
     console.log("-- Free (no subscription row)");
     await db.subscription.deleteMany({ where: { userId: user.id } });
     let p = await page("/plans");
-    check("/plans: 200; Free is the ONE current plan; both paid options can be chosen", p.status === 200 && count(p.html, 'aria-current="true"') === 1 && /Free\s+Current plan/.test(p.text) && p.text.includes("Choose Pro (monthly)") && p.text.includes("Choose Pro (yearly)") && !p.text.includes("Available when"));
+    check("/plans: 200; Free is the ONE current plan; both paid options can be chosen", p.status === 200 && count(p.html, 'aria-current="true"') === 1 && currentRowText(p.html).startsWith("Free") && currentRowText(p.html).includes("Current plan") && p.text.includes("Choose monthly") && p.text.includes("Choose yearly") && !p.text.includes("Available"));
     check("/plans: prices come from the plan config (₦3,000.00 / month, ₦30,000.00 / year)", p.text.includes("₦3,000.00 / month") && p.text.includes("₦30,000.00 / year"));
     let b = await page("/billing");
     check("/billing: \"You're on the Free plan.\", no cancel control, a link to the plans", b.status === 200 && b.text.includes("You're on the Free plan.") && !b.text.includes("Cancel plan") && b.html.includes('href="/plans"'));
@@ -104,8 +110,8 @@ async function main() {
     console.log("-- Pro monthly, active");
     let end = await setSub("active", "monthly", 20);
     p = await page("/plans");
-    check("/plans: Pro (monthly) is the ONE current plan and shows when it is active until", count(p.html, 'aria-current="true"') === 1 && /Pro \(monthly\)\s+Current plan/.test(p.text) && p.text.includes(`Active until ${formatDate(end)}`));
-    check("/plans: the OTHER paid option is not a button (checkout would answer 409); it says when it becomes available", !p.text.includes("Choose Pro") && p.text.includes(`Available when your current plan ends on ${formatDate(end)}`) && !/Free\s+Current plan/.test(p.text));
+    check("/plans: Pro (monthly) is the ONE current plan and shows when it is active until", count(p.html, 'aria-current="true"') === 1 && currentRowText(p.html).startsWith("Pro (monthly)") && currentRowText(p.html).includes(`Active until ${formatDate(end)}`));
+    check("/plans: the OTHER paid option is not a button (checkout would answer 409); it says when it becomes available", !p.text.includes("Choose monthly") && !p.text.includes("Choose yearly") && p.text.includes(`Available ${formatDate(end)}`) && !currentRowText(p.html).startsWith("Free"));
     b = await page("/billing");
     check("/billing: Pro (monthly), Active, 'Active until' the right date, and a Cancel control", b.text.includes("Pro (monthly)") && /Status\s+Active\b/.test(b.text) && b.text.includes(`Active until ${formatDate(end)}`) && b.text.includes("Cancel plan"));
     check("/billing never says 'Renews': there is no automatic renewal", !/renew/i.test(b.text));
@@ -113,7 +119,7 @@ async function main() {
     console.log("-- Pro yearly, active");
     end = await setSub("active", "yearly", 300);
     p = await page("/plans");
-    check("/plans: Pro (yearly) is current; monthly is not offered as a button", count(p.html, 'aria-current="true"') === 1 && /Pro \(yearly\)\s+Current plan/.test(p.text) && !p.text.includes("Choose Pro") && p.text.includes("Available when your current plan ends"));
+    check("/plans: Pro (yearly) is current; monthly is not offered as a button", count(p.html, 'aria-current="true"') === 1 && currentRowText(p.html).startsWith("Pro (yearly)") && !p.text.includes("Choose monthly") && !p.text.includes("Choose yearly") && p.text.includes("Available"));
     b = await page("/billing");
     check("/billing: Pro (yearly) with its end date", b.text.includes("Pro (yearly)") && b.text.includes(`Active until ${formatDate(end)}`));
 
@@ -126,7 +132,7 @@ async function main() {
     for (const [name, status, days, expected] of [["active but the period ended", "active", -3, "Your Pro plan ended on"], ["past_due", "past_due", 5, "Your Pro plan is past due."], ["canceled", "canceled", 5, "Your Pro plan was canceled."]] as const) {
       await setSub(status, "monthly", days);
       p = await page("/plans"); b = await page("/billing");
-      check(`${name}: /plans shows Free as current and both paid options can be chosen`, count(p.html, 'aria-current="true"') === 1 && /Free\s+Current plan/.test(p.text) && p.text.includes("Choose Pro (monthly)") && p.text.includes("Choose Pro (yearly)"));
+      check(`${name}: /plans shows Free as current and both paid options can be chosen`, count(p.html, 'aria-current="true"') === 1 && currentRowText(p.html).startsWith("Free") && p.text.includes("Choose monthly") && p.text.includes("Choose yearly"));
       check(`${name}: /billing says "You're on the Free plan." with '${expected}', and no Cancel control`, b.text.includes("You're on the Free plan.") && b.text.includes(expected) && !b.text.includes("Cancel plan"));
     }
 

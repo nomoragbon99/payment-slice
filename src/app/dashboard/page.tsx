@@ -15,13 +15,15 @@ export default async function DashboardPage() {
   if (!user) redirect("/sign-in");
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-gray-50 px-4">
-      <p className="text-lg text-gray-900">You are signed in as {user.name}.</p>
-      <p className="flex gap-4 text-sm">
-        <Link href="/plans" className="text-blue-600 underline">
+    <div className="flex min-h-screen flex-col items-center justify-center gap-5 bg-[var(--mist)] px-4">
+      <p className="text-[15px] text-[var(--ink)]">
+        Signed in as <span className="font-medium">{user.name}</span>
+      </p>
+      <p className="flex gap-5 text-sm">
+        <Link href="/plans" className="text-[var(--signal)] hover:underline">
           Plans
         </Link>
-        <Link href="/billing" className="text-blue-600 underline">
+        <Link href="/billing" className="text-[var(--signal)] hover:underline">
           Billing
         </Link>
       </p>

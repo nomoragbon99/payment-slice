@@ -5,7 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { signInSchema } from "@/lib/validation/auth";
 import { getSafeRedirectPath } from "@/lib/security/safe-redirect";
 
-const INPUT_CLASSES = "w-full rounded border border-gray-300 px-3 py-2 text-gray-900";
+const INPUT_CLASSES =
+  "w-full rounded-md border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-[15px] text-[var(--ink)] outline-none focus:border-[var(--signal)] focus:ring-1 focus:ring-[var(--signal)]";
 
 // Deliberately small: the same Zod schema the server uses checks the fields here first (instant
 // feedback), then the server checks again (the server is the one that actually counts).
@@ -51,15 +52,15 @@ export function SignInForm() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-4 px-4">
-      <h1 className="text-xl font-semibold">Sign in</h1>
+    <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-6 px-4">
+      <h1 className="text-xl font-semibold text-[var(--ink)]">Sign in</h1>
       {error && (
-        <p role="alert" className="rounded bg-red-50 px-3 py-2 text-sm text-red-700">
+        <p role="alert" className="rounded-md border border-[var(--line)] bg-[var(--mist)] px-3 py-2 text-sm text-[var(--ink)]">
           {error}
         </p>
       )}
       <form onSubmit={onSubmit} noValidate className="flex flex-col gap-4">
-        <label className="flex flex-col gap-1 text-sm">
+        <label className="flex flex-col gap-1.5 text-sm text-[var(--slate)]">
           Email
           <input
             type="email"
@@ -69,7 +70,7 @@ export function SignInForm() {
             className={INPUT_CLASSES}
           />
         </label>
-        <label className="flex flex-col gap-1 text-sm">
+        <label className="flex flex-col gap-1.5 text-sm text-[var(--slate)]">
           Password
           <input
             type="password"
@@ -82,7 +83,7 @@ export function SignInForm() {
         <button
           type="submit"
           disabled={pending}
-          className="rounded bg-blue-600 px-3 py-2 text-white disabled:opacity-60"
+          className="mt-2 rounded-md bg-[var(--signal)] px-4 py-2.5 text-[15px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
         >
           {pending ? "Signing in..." : "Sign in"}
         </button>

@@ -1,1 +1,29 @@
 @import "tailwindcss";
+
+:root {
+  --ink: #14171a;
+  --slate: #5b6470;
+  --paper: #ffffff;
+  --mist: #f4f5f7;
+  --line: #e2e4e8;
+  --signal: #2451cc;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  /* Inter if the system has it (common on recent Windows/macOS/Linux), else the platform's own UI font --
+     no remote font request, so the page never blocks on or depends on a third-party font host. */
+  font-family:
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    system-ui,
+    sans-serif;
+}
+
+/* Money and dates: tabular figures so columns of numbers line up. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}

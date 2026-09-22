@@ -19,16 +19,16 @@ export default async function BillingPage() {
   const view = await getPlanView(user.id);
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-md flex-col gap-4 px-4 py-10">
-      <h1 className="text-xl font-semibold">Billing</h1>
+    <main className="mx-auto flex min-h-screen max-w-[440px] flex-col gap-6 px-4 py-14">
+      <h1 className="text-xl font-semibold text-[var(--ink)]">Billing</h1>
 
-      {view.kind === "pro" ? <ProDetails view={view} /> : <FreeDetails view={view} />}
+      <div className="rounded-lg border border-[var(--line)] p-5">{view.kind === "pro" ? <ProDetails view={view} /> : <FreeDetails view={view} />}</div>
 
-      <p className="flex gap-4 text-sm">
-        <Link href="/plans" className="text-blue-600 underline">
+      <p className="flex gap-5 text-sm">
+        <Link href="/plans" className="text-[var(--signal)] hover:underline">
           Plans
         </Link>
-        <Link href="/dashboard" className="text-blue-600 underline">
+        <Link href="/dashboard" className="text-[var(--signal)] hover:underline">
           Back to dashboard
         </Link>
       </p>
@@ -36,22 +36,30 @@ export default async function BillingPage() {
   );
 }
 
+function Row({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 border-b border-[var(--line)] py-2.5 last:border-b-0">
+      <dt className="text-sm text-[var(--slate)]">{label}</dt>
+      <dd className="tnum text-sm font-medium text-[var(--ink)]">{value}</dd>
+    </div>
+  );
+}
+
 function ProDetails({ view }: { view: Extract<PlanView, { kind: "pro" }> }) {
   return (
-    <>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-        <dt className="text-gray-500">Plan</dt>
-        <dd>
-          {PLAN.name} ({view.interval})
-        </dd>
-        <dt className="text-gray-500">Status</dt>
-        <dd>{view.endsAtPeriodEnd ? "Active, will end" : "Active"}</dd>
+    <div className="flex flex-col gap-4">
+      <dl>
+        <Row label="Plan" value={`${PLAN.name} (${view.interval})`} />
+        <Row label="Status" value={view.endsAtPeriodEnd ? "Active, will end" : "Active"} />
         {/* There is no automatic renewal: each period is a separate payment, so this says when it ENDS. */}
-        <dt className="text-gray-500">{view.endsAtPeriodEnd ? "Ends on" : "Active until"}</dt>
-        <dd>{formatDate(view.activeUntil)}</dd>
+        <Row label={view.endsAtPeriodEnd ? "Ends on" : "Active until"} value={formatDate(view.activeUntil)} />
       </dl>
-      {view.endsAtPeriodEnd ? <p className="text-sm text-gray-700">Your plan will end on {formatDate(view.activeUntil)}.</p> : <CancelPlan />}
-    </>
+      {view.endsAtPeriodEnd ? (
+        <p className="text-sm text-[var(--slate)]">Your plan will end on {formatDate(view.activeUntil)}.</p>
+      ) : (
+        <CancelPlan />
+      )}
+    </div>
   );
 }
 
@@ -67,14 +75,14 @@ function FreeDetails({ view }: { view: Extract<PlanView, { kind: "free" }> }) {
           : null;
 
   return (
-    <>
-      <p>You&apos;re on the Free plan.</p>
-      {note && <p className="text-sm text-gray-700">{note}</p>}
-      <p className="text-sm">
-        <Link href="/plans" className="text-blue-600 underline">
+    <div className="flex flex-col gap-2">
+      <p className="text-[15px] text-[var(--ink)]">You&apos;re on the Free plan.</p>
+      {note && <p className="text-sm text-[var(--slate)]">{note}</p>}
+      <p className="mt-1 text-sm">
+        <Link href="/plans" className="text-[var(--signal)] hover:underline">
           See plans
         </Link>
       </p>
-    </>
+    </div>
   );
 }
