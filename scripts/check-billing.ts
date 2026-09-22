@@ -126,7 +126,14 @@ async function main() {
     console.log("-- Pro, set to end (cancel_at_period_end)");
     end = await setSub("active", "monthly", 10, { cancelAtPeriodEnd: true, reason: "too expensive" });
     b = await page("/billing");
-    check("/billing: says it will end on the date and offers no second Cancel", b.text.includes("Active, will end") && b.text.includes(`Ends on ${formatDate(end)}`) && b.text.includes(`Your plan will end on ${formatDate(end)}.`) && !b.text.includes("Cancel plan"));
+    check(
+      "/billing: says it will end on the date, offers no Cancel button, offers Keep my plan instead",
+      b.text.includes("Active, will end") &&
+        b.text.includes(`Ends on ${formatDate(end)}`) &&
+        b.text.includes(`Your plan will end on ${formatDate(end)} and won't renew.`) &&
+        !b.text.includes("Cancel plan") &&
+        b.text.includes("Keep my plan"),
+    );
 
     console.log("-- not entitled any more: expired, past due, canceled");
     for (const [name, status, days, expected] of [["active but the period ended", "active", -3, "Your Pro plan ended on"], ["past_due", "past_due", 5, "Your Pro plan is past due."], ["canceled", "canceled", 5, "Your Pro plan was canceled."]] as const) {
@@ -140,28 +147,9 @@ async function main() {
     const d = await page("/dashboard");
     check("/dashboard links to /plans and /billing", d.status === 200 && d.html.includes('href="/plans"') && d.html.includes('href="/billing"'));
 
-    console.log("-- the Cancel placeholder endpoint: POST /api/subscription/cancel");
-    const post = (body: string | undefined, headers: Record<string, string> = {}, method = "POST") => fetch(`${BASE}/api/subscription/cancel`, { method, headers: { "content-type": "application/json", origin: BASE, ...headers }, body });
-    let r = await post("{}", { cookie: "" });
-    check("no session -> 401", r.status === 401);
-    r = await post("{}", { cookie, origin: "https://evil.example" });
-    check("a foreign Origin -> 403", r.status === 403);
-    r = await post("{}", { cookie });
-    const j = await r.json();
-    check("signed in, empty body -> 501 NOT_IMPLEMENTED (the cancellation itself is the next task)", r.status === 501 && j.error?.code === "NOT_IMPLEMENTED");
-    r = await post(undefined, { cookie });
-    check("signed in, no body at all -> 501 too", r.status === 501);
-    r = await post(JSON.stringify({ reason: "too expensive" }), { cookie });
-    check("signed in, with a valid reason -> 501", r.status === 501);
-    r = await post(JSON.stringify({ reason: "r".repeat(500) }), { cookie });
-    check("a reason of exactly 500 characters is allowed (the database limit) -> 501", r.status === 501);
-    for (const [name, body] of [["a 501-character reason", JSON.stringify({ reason: "r".repeat(501) })], ["an empty reason", JSON.stringify({ reason: "" })], ["a blank reason", JSON.stringify({ reason: "   " })], ["a reason that is not text", JSON.stringify({ reason: 5 })], ["an unexpected extra key", JSON.stringify({ reason: "x", planId: "free" })], ["invalid JSON", "not json"]] as const) {
-      r = await post(body, { cookie });
-      check(`${name} -> 400, nothing about the server's internals`, r.status === 400);
-    }
-    r = await post(undefined, { cookie }, "GET");
-    check("GET is not allowed -> 405", r.status === 405);
-    check("the placeholder changed nothing: the subscription row is still there, untouched", (await db.subscription.count({ where: { userId: user.id } })) === 1);
+    // POST /api/subscription/cancel and /api/subscription/resume are no longer a placeholder: they do the real
+    // thing now, and are covered in full by npm run check:cancellation (validation, what gets written, the real
+    // HTTP routes and the resulting page states). Nothing further to check about them here.
   } finally {
     await db.subscription.deleteMany({ where: { userId: user.id } });
     await db.session.deleteMany({ where: { userId: user.id } });
