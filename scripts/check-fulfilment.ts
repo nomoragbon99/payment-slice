@@ -325,15 +325,18 @@ async function main() {
     check("the same provider transaction id cannot be fulfilled under a second reference either", errs.length === 1, errs[0]);
   }
 
-  console.log("\n== a second payment while already subscribed extends the period ==");
+  console.log("\n== a second payment, SAME interval, while already subscribed: extends the period ==");
+  // (A second payment for a DIFFERENT interval -- monthly then yearly, an upgrade -- is covered in
+  // check-upgrade.ts: it REPLACES the period rather than stacking. See the note on activateSubscription
+  // in fulfil.ts.)
   {
-    const u = await makeUser("s"); const o1 = await makeOrder(u); const o2 = await makeOrder(u, { interval: "yearly" });
+    const u = await makeUser("s"); const o1 = await makeOrder(u); const o2 = await makeOrder(u);
     await fulfil(o1, { fetchFn: fakePaystack(paystackReply(o1)).fetchFn });
     const first = await subFor(u.id);
     const r2 = await fulfil(o2, { fetchFn: fakePaystack(paystackReply(o2)).fetchFn });
     const second = await subFor(u.id);
-    check("second payment (yearly) while active: fulfilled", r2.outcome === "fulfilled");
-    check("one subscription row; the start is kept; the end moves out by exactly one year; interval and last_tx_ref updated", (await db.subscription.count({ where: { userId: u.id } })) === 1 && second?.currentPeriodStart.getTime() === first?.currentPeriodStart.getTime() && (await sqlBool(Prisma.sql`SELECT (current_period_end = (SELECT current_period_end FROM subscriptions WHERE user_id = ${u.id}::uuid) AND current_period_end = current_period_start + interval '1 month' + interval '1 year') AS ok FROM subscriptions WHERE user_id = ${u.id}::uuid`)) && second?.billingInterval === "yearly" && second?.lastTxRef === o2.txRef);
+    check("second payment (monthly) while active: fulfilled", r2.outcome === "fulfilled");
+    check("one subscription row; the start is kept; the end moves out by exactly one month; interval and last_tx_ref updated", (await db.subscription.count({ where: { userId: u.id } })) === 1 && second?.currentPeriodStart.getTime() === first?.currentPeriodStart.getTime() && (await sqlBool(Prisma.sql`SELECT (current_period_end = (SELECT current_period_end FROM subscriptions WHERE user_id = ${u.id}::uuid) AND current_period_end = current_period_start + interval '2 months') AS ok FROM subscriptions WHERE user_id = ${u.id}::uuid`)) && second?.billingInterval === "monthly" && second?.lastTxRef === o2.txRef);
     check("two fulfilled rows, one per payment: nobody's money is lost", (await countLog({ userId: u.id, eventType: "fulfilled" })) === 2);
   }
   {
