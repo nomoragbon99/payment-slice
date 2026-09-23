@@ -3,10 +3,14 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { PLAN } from "@/config/plans";
 import { getCurrentUser } from "@/lib/auth/session";
+import { quoteUpgrade } from "@/lib/billing/proration";
 import { getPlanView, type PlanView } from "@/lib/billing/subscription";
+import { db } from "@/lib/db";
 import { formatDate } from "@/lib/format-date";
+import { formatMoney } from "@/lib/format-money";
 import { CancelPlan } from "./CancelPlan";
 import { ResumePlan } from "./ResumePlan";
+import { UpgradeToYearly } from "./UpgradeToYearly";
 
 export const metadata: Metadata = { title: "Billing" };
 
@@ -17,13 +21,25 @@ export default async function BillingPage() {
   const user = await getCurrentUser();
   if (!user) redirect("/sign-in?next=%2Fbilling");
 
-  const view = await getPlanView(user.id);
+  const now = new Date();
+  const view = await getPlanView(user.id, now);
+
+  // Same row the entitlement check already reads; quoteUpgrade shares the eligibility decision it uses
+  // so the button and the price shown here can never disagree with what /api/subscription/upgrade allows.
+  const row = await db.subscription.findUnique({
+    where: { userId: user.id },
+    select: { billingInterval: true, status: true, currentPeriodStart: true, currentPeriodEnd: true, cancelAtPeriodEnd: true },
+  });
+  const upgrade = quoteUpgrade(row, now);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-[440px] flex-col gap-6 px-4 py-14">
       <h1 className="text-xl font-semibold text-[var(--ink)]">Billing</h1>
 
-      <div className="rounded-lg border border-[var(--line)] p-5">{view.kind === "pro" ? <ProDetails view={view} /> : <FreeDetails view={view} />}</div>
+      <div className="rounded-lg border border-[var(--line)] p-5">
+        {view.kind === "pro" ? <ProDetails view={view} /> : <FreeDetails view={view} />}
+        {upgrade.eligible && <UpgradeToYearly priceText={formatMoney(upgrade.quote.chargeKobo, upgrade.quote.currency)} />}
+      </div>
 
       <p className="flex gap-5 text-sm">
         <Link href="/plans" className="text-[var(--signal)] hover:underline">

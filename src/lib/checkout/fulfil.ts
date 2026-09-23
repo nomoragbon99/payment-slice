@@ -326,8 +326,13 @@ async function commitFulfilment(client: PrismaClient, a: FulfilArgs): Promise<Fu
 
 // Creates or extends the person's subscription, computing the dates in SQL from ONE reading of the clock.
 //   - not currently active (no row, expired, canceled, past due): a new period starts now;
-//   - already active with time left (a second payment, e.g. two browser tabs both paid): the new period is ADDED
-//     to the current end, because they paid and must get the time. The period start is kept.
+//   - already active, SAME billing interval, with time left (a second payment for the plan they are
+//     already on, e.g. two browser tabs both paid): the new period is ADDED to the current end, because
+//     they paid and must get the time. The period start is kept.
+//   - already active, DIFFERENT billing interval (an upgrade, e.g. monthly -> yearly): the new period
+//     REPLACES the old one and starts now. They paid a prorated top-up specifically to switch effective
+//     today, not to have a year stacked on top of whatever monthly time was left -- stacking would leave
+//     the unused monthly time double-counted on top of the credit already folded into the prorated price.
 // One calendar month / one calendar year are added by Postgres, which clamps month ends (31 Jan + 1 month = 28 Feb).
 async function activateSubscription(
   tx: Prisma.TransactionClient,
@@ -348,9 +353,11 @@ async function activateSubscription(
       status = 'active',
       current_period_start = CASE
         WHEN subscriptions.status = 'active' AND subscriptions.current_period_end > EXCLUDED.current_period_start
+          AND subscriptions.billing_interval = EXCLUDED.billing_interval
         THEN subscriptions.current_period_start ELSE EXCLUDED.current_period_start END,
       current_period_end = CASE
         WHEN subscriptions.status = 'active' AND subscriptions.current_period_end > EXCLUDED.current_period_start
+          AND subscriptions.billing_interval = EXCLUDED.billing_interval
         THEN subscriptions.current_period_end + ${length} ELSE EXCLUDED.current_period_end END,
       cancel_at_period_end = false,
       cancellation_reason = NULL,
