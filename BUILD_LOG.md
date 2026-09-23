@@ -238,3 +238,9 @@ Append-only. Every error, surprise or wrong assumption during the build. Raw mat
 - Cause: expected, not a bug -- flagged here rather than silently edited away, same as the check-billing.ts fallout from the cancellation task.
 - Fix: changed that test's second order to the SAME interval (monthly -> monthly), which is what "a second payment while already subscribed extends the period" was actually meant to demonstrate; the different-interval (upgrade) case is now check-upgrade.ts's job and has its own dedicated regression test proving the opposite (replace, not stack). Rerun: check:fulfilment 105/105, check:upgrade 44/44.
 - Commit: (bundled with the test commit -- see below)
+
+### Captured a real upgrade as evidence (2026-09-23 11:35)
+- What: bob completed a real Pro monthly -> Pro yearly upgrade in Paystack test mode through the running app, mid-cycle. Read the resulting `payment_log` and `subscriptions` rows directly from the database (read-only) and reconstructed the "before" monthly period from the earlier monthly payment's own rows, since `subscriptions` is mutable and no longer holds it.
+- Confirmed: the recorded charge (2,715,766 kobo) matches `quoteUpgrade()`'s formula worked by hand against the real elapsed time between the two payments, and the new period replaced (rather than stacked onto) the old monthly period's end, as the interval-change rule is designed to do.
+- Saved as `docs/evidence/upgrade-proration.md` (the before/after tables and the worked arithmetic) and `docs/evidence/billing-after-upgrade.png` (the owner's screenshot of /billing immediately after), matching the pattern already used for `docs/evidence/subscription-extension.md`.
+- No code changed; this is a documentation-only addition.
