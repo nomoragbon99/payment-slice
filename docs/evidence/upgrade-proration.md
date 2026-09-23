@@ -60,9 +60,10 @@ charge_kobo     = 3000000 − 284234        = 2715766 kobo   (NGN 27,157.66)
 
 This is the evidence that the ~18.4 remaining unused days of the monthly period were converted into a one-time credit against the charge, rather than being both credited *and* additionally tacked on as extra subscription time -- had the old logic (stack whenever active, regardless of interval) still applied, `current_period_end` would instead read 2027-10-21 20:34:20, a full extra month later than what is actually stored.
 
-## Screenshot
+## Screenshots
 
-`billing-after-upgrade.png`: `/billing` as bob, immediately after the upgrade completed, showing the Pro (yearly) plan and its active-until date.
+- `billing-after-upgrade.png`: `/billing` as bob, immediately after the upgrade completed, showing the Pro (yearly) plan and its active-until date (the application's own rendering of the "after" state).
+- `subscription-after-upgrade.png`: the raw `subscriptions` row itself, via Prisma Studio (`localhost:5557`), taken after the upgrade -- `billing_interval = yearly`, `current_period_start = 2026-09-23`, `current_period_end = 2027-09-23` (the database's own rendering of the "after" state, independent of the application UI). The "before" record is not separately screenshotted: `subscriptions` is a mutable, single-current-row table (see schema.prisma), so once the upgrade was fulfilled the old monthly row was overwritten in place and no longer exists to screenshot. The "before" table above is the honest substitute: it is reconstructed from the monthly payment's own append-only `payment_log` rows, which can never be overwritten, so it is exactly as trustworthy as a screenshot would have been -- just sourced from the ledger instead of the mutable row.
 
 ## What is NOT stored
 
