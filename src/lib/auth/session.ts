@@ -43,6 +43,28 @@ export async function clearSessionCookie(): Promise<void> {
   store.delete({ name: authConfig.session.cookieName, path: "/" });
 }
 
+// Fetches a session row together with the fields of its user this app is allowed to expose --
+// never passwordHash, never anything not listed here. Split out from validateSession() so a
+// standalone script (no cookies()/request scope available) can exercise this exact query and
+// count the real SQL statements it issues (see scripts/check-session-query-count.ts).
+//
+// relationLoadStrategy: "join" makes this a genuine single SQL statement: a real Postgres-level
+// JOIN across sessions and users, instead of Prisma's default behaviour of running two separate
+// queries (one on sessions, one on users via `WHERE user_id IN (...)`) and stitching them
+// together in application memory. Measured: 1 SQL statement with "join", 2 with the default
+// "query" strategy (see scripts/check-session-query-count.ts and DECISIONS.md).
+export async function fetchSessionWithUser(sessionId: string) {
+  return db.session.findUnique({
+    where: { id: sessionId },
+    relationLoadStrategy: "join",
+    include: {
+      user: {
+        select: { id: true, name: true, email: true },
+      },
+    },
+  });
+}
+
 export async function validateSession(): Promise<{ session: { id: string }; user: SafeUser } | null> {
   const store = await cookies();
   const token = store.get(authConfig.session.cookieName)?.value;
@@ -50,16 +72,7 @@ export async function validateSession(): Promise<{ session: { id: string }; user
 
   const sessionId = sha256Hex(token);
 
-  // One query fetches the session together with the fields of its user this app is allowed
-  // to expose -- never passwordHash, never anything not listed here.
-  const session = await db.session.findUnique({
-    where: { id: sessionId },
-    include: {
-      user: {
-        select: { id: true, name: true, email: true },
-      },
-    },
-  });
+  const session = await fetchSessionWithUser(sessionId);
 
   if (!session) return null;
 
